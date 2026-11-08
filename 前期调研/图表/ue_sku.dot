@@ -1,0 +1,27 @@
+digraph sku_ue {
+  graph [rankdir=TB; newrank=true; bgcolor="white"; pad="0.35"; nodesep="0.38"; ranksep="0.48"; splines="polyline"; fontname="Microsoft YaHei"; fontsize=12; label=<<B>SKU UE：单品直接取数，多品按规则分摊</B>>; labelloc=t; fontsize=20; fontcolor="#22313F"];
+  node [fontname="Microsoft YaHei"; fontsize=12; shape=box; style="rounded,filled"; color="#7A8A99"; fillcolor="#F5F7FA"; penwidth=1.2; margin="0.22,0.12";];
+  edge [fontname="Microsoft YaHei"; fontsize=11; color="#6B7C93"; arrowsize=0.8; penwidth=1.1;];
+  order [label="订单级数据\n商品金额、优惠、退款\n平台费、补贴、配送费"];
+  decision [label="一单一品？"; shape=diamond; fillcolor="#FFF4D6"; color="#A67C00"; penwidth=1.6; margin="0.04,0.02"];
+  order -> decision;
+  single [label="SKU UE = 订单 UE"; fillcolor="#E8F5E9"; color="#2E7D32"; penwidth=2.4];
+  decision -> single [label=" 是 "];
+  multi [label="多品分摊"; fillcolor="#FFF4D6"; color="#A67C00"];
+  decision -> multi [label=" 否 "];
+  split_goods [label="商品金额、优惠、退款\n按商品金额占比分摊"];
+  split_base [label="餐盒费计入分摊基数\n打包袋、配送费不摊入商品"];
+  split_delivery [label="配送成本\n按订单或距离单独分摊"];
+  sku_data [label="SKU 收入与成本"];
+  sku_ue [label="SKU UE"; fillcolor="#E8F5E9"; color="#2E7D32"; penwidth=2.4];
+  multi -> split_goods;
+  split_goods -> split_base;
+  split_base -> split_delivery;
+  split_delivery -> sku_data;
+  sku_data -> sku_ue;
+  single -> sku_ue;
+  rules [label="分摊规则\n单品优惠 = 单品金额 / 商品金额合计 × 优惠总额\n只有参与优惠的商品分摊\n小数只舍不入，最后一个商品倒算尾差"; shape=note; style="filled"; fillcolor="#FAFAF3"; color="#B9B9A6"; fontsize=11; margin="0.18,0.10"];
+  rules -> split_goods [style=dashed; arrowhead=none];
+  diag [label="用于诊断\n价格 / 补贴 / 成本 / 需求 / 供给履约"; fillcolor="#FAFAF3"; color="#B9B9A6"];
+  sku_ue -> diag;
+}

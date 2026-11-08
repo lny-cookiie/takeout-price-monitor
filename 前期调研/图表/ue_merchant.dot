@@ -1,0 +1,56 @@
+digraph merchant_ue {
+  graph [rankdir=TB; newrank=true; bgcolor="white"; pad="0.35"; nodesep="0.38"; ranksep="0.48"; splines="polyline"; fontname="Microsoft YaHei"; fontsize=12; label=<<B>商家 UE：结算减经营成本</B>>; labelloc=t; fontsize=20; fontcolor="#22313F"];
+  node [fontname="Microsoft YaHei"; fontsize=12; shape=box; style="rounded,filled"; color="#7A8A99"; fillcolor="#F5F7FA"; penwidth=1.2; margin="0.22,0.12";];
+  edge [fontname="Microsoft YaHei"; fontsize=11; color="#6B7C93"; arrowsize=0.8; penwidth=1.1;];
+  subgraph cluster_gross {
+    label="结算前收入"; fontsize=13; fontcolor="#2F5D8A"; style="rounded,dashed"; color="#A9C0D8"; margin=10;
+  goods [label="商品金额"; fillcolor="#EAF2FB"; color="#3E6D9C"];
+  packaging [label="包装费"; fillcolor="#EAF2FB"; color="#3E6D9C"];
+  delivery_receivable [label="商家应收配送费"; fillcolor="#EAF2FB"; color="#3E6D9C"];
+  platform_subsidy [label="平台补贴商家"; fillcolor="#EAF2FB"; color="#3E6D9C"];
+    { rank=same; goods; packaging; delivery_receivable; platform_subsidy; }
+  }
+  gross [label="商家结算前收入"; fillcolor="#E8EEF7"; color="#2F4B6E"; penwidth=2.0];
+  subgraph cluster_deduct {
+    label="结算扣减"; fontsize=13; fontcolor="#8E3B36"; style="rounded,dashed"; color="#D8B3B0"; margin=10;
+  merchant_subsidy [label="商家活动补贴"; fillcolor="#FCECEC"; color="#A94A45"];
+  tech_fee [label="技术服务费"; fillcolor="#FCECEC"; color="#A94A45"];
+  delivery_fee [label="配送服务费"; fillcolor="#FCECEC"; color="#A94A45"];
+  promo_fee [label="推广服务费"; fillcolor="#FCECEC"; color="#A94A45"];
+    { rank=same; merchant_subsidy; tech_fee; delivery_fee; promo_fee; }
+  }
+  deduct_total [label="结算扣减合计"; fillcolor="#F7E3E2"; color="#8E3B36"; penwidth=2.0];
+  goods -> gross;
+  packaging -> gross;
+  delivery_receivable -> gross;
+  platform_subsidy -> gross;
+  merchant_subsidy -> deduct_total;
+  tech_fee -> deduct_total;
+  delivery_fee -> deduct_total;
+  promo_fee -> deduct_total;
+  gross -> settlement [label=" + "];
+  deduct_total -> settlement [label=" - "];
+  settlement [label="商家结算金额\n= 结算前收入 - 结算扣减合计"; fillcolor="#E8EEF7"; color="#2F4B6E"; penwidth=2.0];
+  subgraph cluster_operating {
+    label="经营成本"; fontsize=13; fontcolor="#9A5A24"; style="rounded,dashed"; color="#E4C3A2"; margin=10;
+  food_cost [label="食材成本"; fillcolor="#FDF0E3"; color="#B26A2E"];
+  pack_cost [label="包装成本"; fillcolor="#FDF0E3"; color="#B26A2E"];
+  refund [label="退款和赔付"; fillcolor="#FDF0E3"; color="#B26A2E"];
+  labor [label="增量人工"; fillcolor="#FDF0E3"; color="#B26A2E"];
+    { rank=same; food_cost; pack_cost; refund; labor; }
+  }
+  cost_total [label="经营成本合计"; fillcolor="#FBE7D2"; color="#B26A2E"; penwidth=2.0];
+  food_cost -> cost_total;
+  pack_cost -> cost_total;
+  refund -> cost_total;
+  labor -> cost_total;
+  settlement -> contribution [label=" + "];
+  cost_total -> contribution [label=" - "];
+  contribution [label="商家单均贡献\n= 商家结算金额 - 经营成本合计"; fillcolor="#E8F5E9"; color="#2E7D32"; penwidth=2.4];
+  decision [label="商家单均贡献 ≥ 0？"; shape=diamond; fillcolor="#FFF4D6"; color="#A67C00"; penwidth=1.6; margin="0.04,0.02"];
+  contribution -> decision;
+  ok [label="供给可持续"; fillcolor="#E8F5E9"; color="#2E7D32"];
+  bad [label="供给不可持续\n调价 / 调补贴 / 调成本"; fillcolor="#FCECEC"; color="#A94A45"];
+  decision -> ok [label=" 是 "];
+  decision -> bad [label=" 否 "];
+}

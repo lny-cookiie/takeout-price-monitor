@@ -1,0 +1,250 @@
+[
+  {
+    "platform": "jd",
+    "entry": "示例：京东应用外卖入口",
+    "package": "example.unconfigured.takeout",
+    "appVersion": "请填写实际版本",
+    "device": "REPLACE_DEVICE_SERIAL",
+    "account": "jd-test-account",
+    "point": "site-1",
+    "access": {
+      "reviewedBy": "请填写核查人",
+      "reference": "请填写入口使用依据",
+      "expiresAt": "2000-01-01T00:00:00+08:00",
+      "allowedUse": "competition_monitoring"
+    },
+    "selectors": {
+      "home": {
+        "text": "外卖",
+        "resource": "example.unconfigured.takeout:id/home"
+      },
+      "search": {
+        "text": "搜索",
+        "resource": "example.unconfigured.takeout:id/search"
+      },
+      "searchInput": {
+        "text": "搜索商家",
+        "resource": "example.unconfigured.takeout:id/searchInput"
+      },
+      "result": {
+        "text": "{store}",
+        "resource": "example.unconfigured.takeout:id/result"
+      },
+      "store": {
+        "text": "{store}",
+        "resource": "example.unconfigured.takeout:id/store"
+      },
+      "address": {
+        "text": "{address}",
+        "resource": "example.unconfigured.takeout:id/address"
+      },
+      "item": {
+        "text": "{item}",
+        "resource": "example.unconfigured.takeout:id/item"
+      },
+      "spec": {
+        "text": "{spec}",
+        "resource": "example.unconfigured.takeout:id/spec"
+      },
+      "selectedSpec": {
+        "text": "已选 {spec}",
+        "resource": "example.unconfigured.takeout:id/selectedSpec"
+      },
+      "options": {
+        "text": "{options}",
+        "resource": "example.unconfigured.takeout:id/options"
+      },
+      "composition": {
+        "text": "{composition}",
+        "resource": "example.unconfigured.takeout:id/composition"
+      },
+      "add": {
+        "text": "加入购物车",
+        "resource": "example.unconfigured.takeout:id/add"
+      },
+      "cartEmpty": {
+        "text": "购物车为空",
+        "resource": "example.unconfigured.takeout:id/cartEmpty"
+      },
+      "cartLine": {
+        "text": "{item} {spec}",
+        "resource": "example.unconfigured.takeout:id/cartLine"
+      },
+      "quantity": {
+        "text": "×{quantity}",
+        "resource": "example.unconfigured.takeout:id/quantity"
+      },
+      "checkout": {
+        "text": "去结算",
+        "resource": "example.unconfigured.takeout:id/checkout"
+      },
+      "checkoutStage": {
+        "text": "确认订单",
+        "resource": "example.unconfigured.takeout:id/checkoutStage"
+      },
+      "delivery": {
+        "text": "配送",
+        "resource": "example.unconfigured.takeout:id/delivery"
+      },
+      "point": {
+        "text": "请填写本地核对文字",
+        "resource": "example.unconfigured.takeout:id/point"
+      },
+      "increase": {
+      "text": "+",
+      "resource": "example.unconfigured.takeout:id/increase"
+    },
+    "remove": {
+        "text": "减少",
+        "resource": "example.unconfigured.takeout:id/remove"
+      },
+      "soldOut": {
+        "text": "售罄",
+        "resource": "example.unconfigured.takeout:id/soldOut"
+      },
+      "closed": {
+        "text": "休息中",
+        "resource": "example.unconfigured.takeout:id/closed"
+      },
+      "outOfRange": {
+        "text": "超出配送范围",
+        "resource": "example.unconfigured.takeout:id/outOfRange"
+      },
+      "minimum": {
+        "text": "未达起送金额",
+        "resource": "example.unconfigured.takeout:id/minimum"
+      }
+    },
+    "fields": {
+      "payable": {
+        "resource": "example.unconfigured.takeout:id/payable",
+        "prefix": "应付 "
+      },
+      "subtotal": {
+        "resource": "example.unconfigured.takeout:id/subtotal",
+        "prefix": "商品小计 "
+      },
+      "packaging": {
+        "resource": "example.unconfigured.takeout:id/packaging",
+        "prefix": "包装费 "
+      },
+      "delivery": {
+        "resource": "example.unconfigured.takeout:id/delivery",
+        "prefix": "配送费 "
+      },
+      "other": {
+        "resource": "example.unconfigured.takeout:id/other",
+        "prefix": "其他费用 "
+      },
+      "discount": {
+        "resource": "example.unconfigured.takeout:id/discount",
+        "prefix": "优惠 "
+      },
+      "eta": {
+        "resource": "example.unconfigured.takeout:id/eta",
+        "prefix": "预计 "
+      },
+      "current": {
+        "resource": "example.unconfigured.takeout:id/current",
+        "prefix": ""
+      },
+      "reference": {
+        "resource": "example.unconfigured.takeout:id/reference",
+        "prefix": ""
+      },
+      "couponName": {
+        "resource": "example.unconfigured.takeout:id/couponName",
+        "prefix": ""
+      },
+      "couponRule": {
+        "resource": "example.unconfigured.takeout:id/couponRule",
+        "prefix": ""
+      },
+      "couponThreshold": {
+        "resource": "example.unconfigured.takeout:id/couponThreshold",
+        "prefix": ""
+      },
+      "couponBasis": {
+        "resource": "example.unconfigured.takeout:id/couponBasis",
+        "prefix": ""
+      },
+      "couponScope": {
+        "resource": "example.unconfigured.takeout:id/couponScope",
+        "prefix": ""
+      },
+      "couponTime": {
+        "resource": "example.unconfigured.takeout:id/couponTime",
+        "prefix": ""
+      },
+      "couponMember": {
+        "resource": "example.unconfigured.takeout:id/couponMember",
+        "prefix": ""
+      },
+      "couponStacking": {
+        "resource": "example.unconfigured.takeout:id/couponStacking",
+        "prefix": ""
+      },
+      "couponApplied": {
+        "resource": "example.unconfigured.takeout:id/couponApplied",
+        "prefix": ""
+      },
+      "couponEligible": {
+        "resource": "example.unconfigured.takeout:id/couponEligible",
+        "prefix": ""
+      },
+      "catalogStore": {
+        "resource": "example.unconfigured.takeout:id/catalogStore",
+        "prefix": ""
+      },
+      "catalogBrand": {
+        "resource": "example.unconfigured.takeout:id/catalogBrand",
+        "prefix": ""
+      },
+      "catalogCity": {
+        "resource": "example.unconfigured.takeout:id/catalogCity",
+        "prefix": ""
+      },
+      "catalogAddress": {
+        "resource": "example.unconfigured.takeout:id/catalogAddress",
+        "prefix": ""
+      },
+      "catalogItem": {
+        "resource": "example.unconfigured.takeout:id/catalogItem",
+        "prefix": ""
+      },
+      "catalogSpec": {
+        "resource": "example.unconfigured.takeout:id/catalogSpec",
+        "prefix": ""
+      },
+      "catalogOptions": {
+        "resource": "example.unconfigured.takeout:id/catalogOptions",
+        "prefix": ""
+      },
+      "catalogKind": {
+        "resource": "example.unconfigured.takeout:id/catalogKind",
+        "prefix": ""
+      }
+    },
+    "jdShelf": {
+      "searchResults": { "resource": "example.unconfigured.takeout:id/store_results" },
+      "resultCard": { "resource": "example.unconfigured.takeout:id/store_card" },
+      "resultName": { "resource": "example.unconfigured.takeout:id/result_name", "prefix": "" },
+      "identity": { "resource": "example.unconfigured.takeout:id/store_identity" },
+      "storeName": { "resource": "example.unconfigured.takeout:id/store_name", "prefix": "" },
+      "city": { "resource": "example.unconfigured.takeout:id/store_city", "prefix": "" },
+      "district": { "resource": "example.unconfigured.takeout:id/store_district", "prefix": "" },
+      "address": { "resource": "example.unconfigured.takeout:id/store_address", "prefix": "营业地址：" },
+      "menu": { "resource": "example.unconfigured.takeout:id/menu" },
+      "itemCard": { "resource": "example.unconfigured.takeout:id/menu_item_card" },
+      "itemName": { "resource": "example.unconfigured.takeout:id/item_name", "prefix": "" },
+      "itemKind": { "resource": "example.unconfigured.takeout:id/item_kind", "prefix": "" },
+      "itemSpec": { "resource": "example.unconfigured.takeout:id/item_spec", "prefix": "" },
+      "itemOptions": { "resource": "example.unconfigured.takeout:id/item_options", "prefix": "" },
+      "itemId": { "resource": "example.unconfigured.takeout:id/item_id", "prefix": "" },
+      "sales": { "resource": "example.unconfigured.takeout:id/item_sales", "prefix": "" },
+      "end": { "resource": "example.unconfigured.takeout:id/menu_end", "text": "菜单到底" }
+    },
+    "subtotalBasis": "unknown",
+    "feesSeparate": null
+  }
+]

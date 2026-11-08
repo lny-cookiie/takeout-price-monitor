@@ -1,0 +1,36 @@
+{
+  "name": "takeout-observatory",
+  "version": "0.4.4",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "dev:ue": "tsx scripts/serve-ue.ts",
+    "build": "tsc -p tsconfig.json && esbuild src/ui/app.ts --bundle --format=esm --outfile=public/app.js && esbuild src/ue/app.ts --bundle --format=esm --outfile=public/ue.js",
+    "build:ue": "esbuild src/ue/app.ts --bundle --format=esm --outfile=public/ue.js",
+    "start": "node dist/main.js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
+    "test:e2e": "tsx scripts/verify.ts",
+    "test:ue": "tsx --test tests/ue.test.ts",
+    "test:ue:browser": "npm run build:ue && tsx scripts/verify-ue.ts",
+    "demo": "tsx scripts/showcase.ts",
+    "browser:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "@midscene/android": "1.17.6",
+    "@midscene/core": "1.17.6",
+    "ajv": "^8.17.1",
+    "playwright": "^1.56.1",
+    "sharp": "0.34.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "esbuild": "^0.25.12",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,34 @@
+# 依赖与构建产物
+node_modules/
+dist/
+public/app.js
+public/ue.js
+*.tsbuildinfo
+
+# 本地运行时数据、采集证据与验收产物（不入库）
+.runtime/
+midscene_run/
+artifacts/
+
+# 凭据：真实配置不入库，保留模板
+.env
+.env.*
+!.env.example
+/android-sources.json
+
+# 本地数据文件
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.gguf
+
+# 临时目录、缓存与日志
+.audit_tmp/
+__pycache__/
+*.pyc
+*.log
+
+# 系统文件
+Thumbs.db
+.DS_Store

@@ -1,0 +1,21 @@
+Use case: infographic-diagram
+Create a polished simplified Chinese business-to-technology architecture diagram. White background, restrained navy, teal business, violet technology. Portrait 4:5 canvas, high resolution. Absolutely NO overall big title. Only two modest column headings: “业务逻辑” on left and “技术架构” on right. Six rows, vertically aligned. Each row has one left card and one right card, connected by a fine horizontal dashed line to signify one-to-one correspondence. Both left and right cards carry identical row numbers 01–06. Each column has its own downward arrows connecting the six cards into a clearly readable main flow. Cards use a bold short title and exactly one or two short supporting lines. No paragraphs, no icons, no decorative illustrations. Use comfortable margins and large highly legible Chinese text. Clear separation between the two equal-width columns. This is a target architecture based on an existing Node.js/TypeScript/SQLite single-process local application, Android automation with Midscene + ADB, multimodal model, platform-specific adapters. Do not invent cloud services.
+Exact card text:
+Row 01 left title “设定监测范围”; subtitle “门店 · 配送点位 · 账号条件 · 餐期”
+Row 01 right title “任务配置与调度”; subtitles “Node.js + TypeScript”“同批任务；设备与账号互斥”
+Row 02 left title “确认同店同品”; subtitles “三平台各取销量前五，再合并”“核对门店、单品与规格”
+Row 02 right title “店品识别与映射”; subtitles “多模态模型推荐 + 规则校验”“人工确认；版本复用”
+Row 03 left title “三平台采集报价”; subtitles “京东 · 美团 · 淘宝闪购”“单品一份；读取结算应付”
+Row 03 right title “平台适配与设备执行”; subtitles “三平台适配器 → Midscene + ADB”“多设备并行；不下单、不支付”
+Row 04 left title “核验价格与证据”; subtitle “价格类型、费用、时间与截图”
+Row 04 right title “数据校验与存储”; subtitles “Schema校验 → SQLite + 证据文件”“金额用分；未知留空；独立抽检”
+Row 05 left title “同条件比较价差”; subtitles “同店同规格、同场景、同时间窗”“展示价差、证据与不可比原因”
+Row 05 right title “比较服务与工作台”; subtitles “条件校验 + 观察时差≤5分钟”“输出价差、证据及CSV”
+Row 06 left title “持续监测与复核”; subtitle “跟踪变价；复核异常；控制成本”
+Row 06 right title “运行监控与故障恢复”; subtitles “日志与指标；超时与有限重试”“访问受限即停；改版复验”
+Below the cards add a single subtle horizontal strip with three compact texts aligned equally:
+“质量：正确率 / 可比率”
+“稳定：有效报价率 / 恢复用时”
+“效率：耗时 / 单条有效成本”
+At bottom small readable note: “三平台完整落地目标态；入口使用条件满足后实施”
+Do not include any more text. Do not add a big title. Check all Chinese spelling carefully. This must be much simpler than a dense text-heavy flowchart.
