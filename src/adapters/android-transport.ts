@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { AndroidDevice } from '@midscene/android';
 import type { UITreeSnapshot } from '@midscene/core';
 import { CollectionError } from '../domain/contracts.js';
+import { AndroidUiTreeReader } from './android-uitree.js';
 import type { AndroidSource } from './android-source.js';
 
 const run=promisify(execFile);
@@ -91,6 +92,10 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
   if (version!==source.appVersion) throw new CollectionError('app_version_changed','blocked');
   signal.throwIfAborted();
   const device=new AndroidDevice(source.device,{exposeRunAdbShellAction:false,alwaysRefreshScreenInfo:false});
+  // 常驻读屏：u2 server 单次读取 0.1-0.3 秒，明显快于 uiautomator dump（每次约 2.7 秒）。
+  // 服务不可用或初始化失败时静默回退到 Midscene 的 dump 链路，保证功能不受影响。
+  let treeReader: Promise<AndroidUiTreeReader|null>|null=null;
+  const getTreeReader=()=>treeReader ??= AndroidUiTreeReader.create({serial:source.device,adbPath:adb()}).catch(()=>null);
   const beforeInput=()=>{
     // Cart restoration owns a separate deadline after collection is cancelled.
     const inputSignal=AbortSignal.timeout(5000);
@@ -99,7 +104,14 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
     },source.package,inputSignal);
   };
   return {
-    getUITree:()=>device.getUITree(),
+    getUITree:async()=>{
+      const reader=await getTreeReader();
+      if(reader){
+        try{return await reader.read();}
+        catch{/* 常驻服务异常时回退到原始 dump 链路 */}
+      }
+      return device.getUITree();
+    },
     size:()=>device.size(),
     async launch(reset=false){
       await prepareAndroidDisplay(async command=>{
