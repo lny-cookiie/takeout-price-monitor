@@ -292,7 +292,8 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     const onMenu=pilotMenuIdentity(nodes);
     if (onMenu) return verifyPilotStore(undefined,true,onMenu,true,nodes);
     const visible=pilotIdentity(nodes);
-    if (visible) return verifyPilotStore(undefined,true,visible);
+    // 只有确实在门店页（有门店购物车入口）才复用，避免把结算页/详情页当成门店页。
+    if (visible && screen.selector('cart',nodes,false)) return verifyPilotStore(undefined,true,visible);
     if (screen.find(merchant,nodes,false)) {
       const details=merchantTab(nodes,await screen.device.size());
       if (details) return verifyPilotStore(details,true);

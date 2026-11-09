@@ -312,6 +312,9 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         signal.throwIfAborted();
         // 采集从首页/外卖频道等原生页面开始，用 u2 即时快照；读到 WebView 页面会自动回落到 dump。
         await device.setTreeMode?.('u2').catch(()=>undefined);
+        // 手机可能停在门店页/详情页/结算页，复用这些状态会让后续步骤错乱；每次采集强制重启到首页。
+        await device.launch(true);
+        await wait(1_200,undefined,{signal});
         stepEnd();
         const query=task.jdOrigin?.brand ?? (source.searchBy==='brand' ? store.brand : store.name);
         const vars = {query,store:store.name,address:store.address,item:item.name,spec:item.spec,quantity:'1',
@@ -365,7 +368,30 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         }
         note('store','核对门店名称及营业地址。');
         stepStart('sku_match');
-        if (!screen.selector('cartEmpty',nodes,false)) throw new CollectionError('cart_not_owned','blocked');
+        if (!screen.selector('cartEmpty',nodes,false)) {
+          // 门店购物车有残留商品（上次测试加购的）：先清空再继续，避免每次失败后人工处理。
+          const openCart=await screen.nodes(true).catch(()=>[] as UiNode[]);
+          if (screen.selector('cart',openCart,false)) {
+            await screen.tap('cart',openCart);
+            await wait(800,undefined,{signal});
+            const panel=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            const clearNode=panel.find(node=>/清空购物车/.test(textOf(node)));
+            if (clearNode) {
+              const cb=clearNode.bounds;
+              await screen.device.tap(cb.left+cb.width/2,cb.top+cb.height/2);
+              await wait(900,undefined,{signal});
+              const dialog=await screen.nodes(true).catch(()=>[] as UiNode[]);
+              const confirm=dialog.find(node=>textOf(node).trim()==='清空');
+              if (confirm) {
+                const db=confirm.bounds;
+                await screen.device.tap(db.left+db.width/2,db.top+db.height/2);
+              }
+              await wait(900,undefined,{signal});
+            }
+          }
+          nodes=await screen.nodes(true);
+          if (!screen.selector('cartEmpty',nodes,false)) throw new CollectionError('cart_not_owned','blocked');
+        }
         if (task.jdOrigin && jd) await jd.findJdMenuItem(screen,store,item,signal);
         else {
           if (source.selectors.category) {
