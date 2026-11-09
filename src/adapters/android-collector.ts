@@ -14,7 +14,7 @@ import { privacyBandMask } from './checkout-privacy.js';
 import {PAGE_ONTOLOGY_VERSION,mapVersion,executionPages} from '../domain/page-ontology.js';
 export { resourceOf, textOf } from './android-page.js';
 
-const forbidden = /提交订单|确认支付|立即支付|去支付|支付订单|立即购买|领取|开通会员|购买会员|去登录|同意并/;
+const forbidden = /提交订单|确认支付|立即支付|去支付|支付订单|领取|开通会员|购买会员|去登录|同意并/;
 const restricted = /请完成.{0,5}验证|验证码|滑动验证|人机验证/;
 const priceCheck = validator<{payable: string | null}>(object({payable:nullable(string(50))}),'报价');
 const menuPriceCheck = validator<{current: string | null}>(object({current:nullable(string(50))}),'商品现价');
@@ -417,15 +417,21 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         console.error('[diag] sku_match: u2 ready, waiting spec');
         try{nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,...(task.specified?{timeoutMs:6_000}:{})});}
         catch(error){
+          // 立即购买模式不依赖规格文字：详情页有“立即购买”按钮即可直接继续。
+          if (source.selectors.buyNow) {
+            nodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            note('variant','立即购买模式：跳过规格文字核对，直接去结算。');
+          } else {
           const current=await screen.nodes();
           if(!task.specified||!jd||!(error instanceof CollectionError&&error.code==='page_not_ready')||!source.selectors.itemDetail||
             !screen.selector('itemDetail',current,false)||!screen.selector('add',current,false))throw error;
           // 详情页已打开且有“加入购物车”：规格面板默认不展开，u2 树里读不到“已选”不影响加购，直接继续（规格以结算页为准）。
           emit?.({phase:'item_open_retry',state:'succeeded',data:{reason:'规格面板未展开，直接加购'}});
           nodes=current;
+          }
         }
         await unavailability(nodes);
-        if (source.selectors.spec) {
+        if (source.selectors.spec && !source.selectors.buyNow) {
           await screen.tap('spec',nodes);
           nodes=await screen.waitFor(['selectedSpec'],{availability:true});
           await unavailability(nodes);

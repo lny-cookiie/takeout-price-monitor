@@ -18,7 +18,7 @@ function normalizeKey(value:string):string {
   return value.replace(/[\s\u200b\u200c\u200d\ufeff]+/g,'').replace(/＆/g,'&').replace(/（/g,'(').replace(/）/g,')');
 }
 const unsafeText=/\b\d{11,}\b|收货地址|联系人|收货人|手机号|https?:|账号密码/;
-const unsafeTap=/提交订单|确认支付|立即支付|去支付|支付订单|立即购买|领取|开通会员|购买会员|去登录|同意并/;
+const unsafeTap=/提交订单|确认支付|立即支付|去支付|支付订单|领取|开通会员|购买会员|去登录|同意并/;
 const packageLabel=/套餐|组合餐|随心选|随心拼|[一二两三四五六七八九十1-9]人餐|[二三四五六七八九十2-9](?:件套|件任选|拼)/;
 const platformKey=/^[A-Za-z0-9_.:-]{1,80}$/;
 const classOf=(n:UiNode)=>n.attrs.class?.split('.').at(-1);
@@ -317,7 +317,10 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
         await screen.tap('entryCategory',current);actions.push('entryCategory');
       }
     }
-    return {value:await screen.waitFor(['home',src.homePoint ? 'homePoint' : 'point'],{onLaunch:true}),data:{reusedHome:!!(homeEntry||categoryEntry),entryActions:actions}};
+    // u2 读首页时“搜索”按钮的 class 可能是 TextView，先等外卖入口；入口也不在时再退回等搜索控件。
+    const ready=await screen.waitFor(['channel',src.homePoint ? 'homePoint' : 'point'],{onLaunch:true,timeoutMs:25_000})
+      .catch(async()=>await screen.waitFor(['home'],{onLaunch:true,timeoutMs:10_000}));
+    return {value:ready,data:{reusedHome:!!(homeEntry||categoryEntry),entryActions:actions}};
   });
   const candidates=searchEntry ? [] : await stage(emit,'brand_search',async()=>{
     // 首页/频道页切换瞬间搜索框可能还没渲染，先等控件出现再点，避免 control_missing。
@@ -662,9 +665,17 @@ export async function findJdMenuItem(screen:ReviewedScreen,store:Supply['store']
       await screen.device.search(target.name,signal,true);
       await wait(1_500,undefined,{signal});
       const results=await screen.nodes(true).catch(()=>[] as UiNode[]);
-      const hit=results.filter(node=>normalizeKey(textOf(node)).includes(normalizeKey(target.name))&&node.bounds.width>0&&node.bounds.height>0)
-        .sort((a,b)=>b.bounds.top-a.bounds.top)[0];
-      console.error('[diag] store-search: results',results.length,'hit',!!hit);
+      // SKU 精准匹配：排除套餐/组合等变体，优先商品名与目标完全一致（“板烧鸡腿堡”不能选成“双层板烧鸡腿堡套餐”）。
+      const targetKey=normalizeKey(target.name);
+      const pool=results.filter(node=>{
+        const label=normalizeKey(textOf(node));
+        if (!(node.bounds.width>0&&node.bounds.height>0)) return false;
+        if (/(套餐|三件套|四件套|双人餐|多人餐|组合|欢乐送|家庭餐)/.test(label)) return false;
+        return label.includes(targetKey);
+      });
+      const exact=pool.find(node=>normalizeKey(textOf(node)).split(/[，,]/)[0]===targetKey);
+      const hit=exact??pool.sort((a,b)=>b.bounds.top-a.bounds.top)[0];
+      console.error('[diag] store-search: results',results.length,'pool',pool.length,'exact',!!exact,'hit',!!hit);
       if (hit) {
         await tapNode(screen,hit,signal);
         // 商品详情弹窗是原生渲染，u2 能读规格与加入购物车。
