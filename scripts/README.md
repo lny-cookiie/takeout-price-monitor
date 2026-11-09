@@ -28,6 +28,7 @@
 | `verify.ts` | 端到端验证（`npm run test:e2e`），使用独立临时数据库 |
 | `verify-collection.ts` | 指定单品采集工作台浏览器验证 |
 | `verify-ue.ts` | UE 工作台浏览器验证（`npm run test:ue:browser`） |
+| `run-acceptance.ts` | 京东单店验收编排：前置检查 → 20 次批次 → 汇总报告 → 冻结基线 → 证据索引；默认 dry-run 只做前置检查，加 `--run` 才启动真机采集 |
 | `serve-ue.ts` | UE 静态预览服务（`npm run dev:ue`），不连采集后台 |
 | `showcase.ts` | 历史模拟演示（`npm run demo`） |
 | `model-smoke.ts` | 视觉模型连接与结构化读数冒烟 |
