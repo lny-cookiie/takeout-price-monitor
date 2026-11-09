@@ -4,7 +4,7 @@
 // 3) 语义匹配失败时，把"视觉兜底"收敛到一个 hook，由调用方注入（项目统一的 model.locate）。
 // 4) 点错后的恢复方式是返回上一页重试，禁止重启 App。
 
-import {guardPage} from './page-guard.js';
+import {guardMainPath} from './page-guard.js';
 
 export interface U2Node {
   text: string;
@@ -107,12 +107,12 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
       const ns = await waitStable(4);
-      // 点错打开分享/排序/支付页时立刻退回：守卫只做字符串匹配，延迟控制在 150ms 级别，不拖慢主链路。
-      const guard = guardPage(ns.map(n => ({text: n.text, desc: n.desc})));
-      if (guard.shouldBack) {
-        console.log(`[meituan] 遇到意外页面(${guard.kind})，立即返回`);
+      // 白名单守卫：只要当前页不在美团主链路页面集合里（分享/问卷/支付/活动弹层…），立即返回重试。
+      const guard = guardMainPath('meituan', ns.map(n => ({text: n.text, desc: n.desc})));
+      if (!guard.ok) {
+        console.log(`[meituan] 页面不在主链路(${guard.kind})，立即返回`);
         await options.back();
-        await sleep(350);
+        await sleep(300);
         continue;
       }
       const hit = ns.find(pred);

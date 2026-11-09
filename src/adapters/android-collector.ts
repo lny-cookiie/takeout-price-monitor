@@ -10,7 +10,7 @@ import type { EvidenceStore } from '../infra/evidence.js';
 import type { ModelGateway } from '../infra/model.js';
 import { cropBoxes, flatten, resourceOf, textOf } from './android-page.js';
 import { captureCheckout, verifyCheckout, compactEvidence } from './checkout-reading.js';
-import { guardPage } from './page-guard.js';
+import { guardMainPath } from './page-guard.js';
 import { privacyBandMask } from './checkout-privacy.js';
 import {PAGE_ONTOLOGY_VERSION,mapVersion,executionPages} from '../domain/page-ontology.js';
 export { resourceOf, textOf } from './android-page.js';
@@ -89,8 +89,8 @@ export class ReviewedScreen {
       }
       // 点错打开分享/排序/支付页：立即返回（守卫只做字符串匹配，300ms 级反应），避免在错误页面空等。
       if (nodes.length) {
-        const guard = guardPage(nodes.map(n => ({text: textOf(n)})));
-        if (guard.shouldBack) {
+        const guard = guardMainPath('jd', nodes.map(n => ({text: textOf(n)})));
+        if (!guard.ok) {
           await this.device.back();
           await wait(300,undefined,{signal:this.signal});
           continue;
