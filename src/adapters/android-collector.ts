@@ -713,7 +713,19 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           stepEnd({state:'succeeded',evidenceIds:[evidence.id]});
           stepStart('model_verify');
           const result = await model.json(attemptId,'checkout_read','读取截图中结算应付金额的原文，只返回 { "payable": "金额原文" }，未显示则为 null。',{field:source.fields.payable.prefix},priceCheck,{image:frame.image,signal,evidenceIds:[evidence.id]});
-          const total = parseCny(payable.raw);
+          // 美团结算页显示“券前价”，红包需点击后才抵扣，实付 = 券前价 − 可用红包；京东等其他平台无此口径。
+          let total = parseCny(payable.raw);
+          if (platform === 'meituan' && source.fields.couponBefore) {
+            const beforeRaw = screen.field(source.fields.couponBefore, nodes)?.raw;
+            const beforeFen = beforeRaw ? parseCny(beforeRaw) : null;
+            const couponText = source.fields.discount ? screen.field(source.fields.discount, nodes)?.raw ?? '' : '';
+            const couponMatch = /(\d+(?:\.\d+)?)\s*元/.exec(couponText);
+            const couponFen = couponMatch ? Math.round(Number(couponMatch[1]) * 100) : 0;
+            if (beforeFen !== null) {
+              total = beforeFen - couponFen;
+              emit?.({phase:'meituan_coupon',state:'succeeded',data:{before:beforeFen,coupon:couponFen,actual:total}});
+            }
+          }
           const modelFen=moneyReading(result.payable);
           if (modelFen!==total) {
             stepEnd({state:'failed',errorCode:'amount_evidence_mismatch',data:{structuralFen:total,modelFen},evidenceIds:[evidence.id]});

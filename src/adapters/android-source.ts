@@ -23,7 +23,7 @@ export interface AndroidSource {
   platform: Platform; entry: string; package: string; appVersion: string; device: string; account: string; point: string;
   access: { reviewedBy: string; reference: string; expiresAt: string; allowedUse: 'competition_monitoring'; writtenPermission?: string };
   selectors: Record<RequiredSelector,Selector> & Partial<Record<OptionalSelector,Selector>>;
-  fields: Partial<Record<BreakdownKey|'eta'|'current'|'reference'|'couponName'|'couponRule'|'couponThreshold'|'couponBasis'|'couponScope'|'couponTime'|'couponMember'|'couponStacking'|'couponApplied'|'couponEligible'|CatalogField,Field>> & { payable: Field };
+  fields: Partial<Record<BreakdownKey|'eta'|'current'|'reference'|'couponName'|'couponRule'|'couponThreshold'|'couponBasis'|'couponScope'|'couponTime'|'couponMember'|'couponStacking'|'couponApplied'|'couponEligible'|'couponBefore'|CatalogField,Field>> & { payable: Field };
   couponRowResource?: string;
   searchBy?: 'brand'|'store';
   jdShelf?: JdShelfCalibration;
@@ -57,7 +57,7 @@ const check = validator<AndroidSource>(object({
   appVersion:string(50),device:{type:'string',pattern:'^[A-Za-z0-9_.:-]{1,80}$'},account:string(80),point:string(80),
   access:object({reviewedBy:string(100),reference:string(250),expiresAt:string(40),allowedUse:enumOf('competition_monitoring'),writtenPermission:string(250)},['reviewedBy','reference','expiresAt','allowedUse']),
   selectors:object(Object.fromEntries([...required,...optional].map(k=>[k,selector])),[...required]),
-  fields:object(Object.fromEntries(['payable',...breakdownKeys,'eta','current','reference','couponName','couponRule','couponThreshold','couponBasis','couponScope','couponTime','couponMember','couponStacking','couponApplied','couponEligible',...catalogFields].map(k=>[k,field])),['payable']),
+  fields:object(Object.fromEntries(['payable',...breakdownKeys,'eta','current','reference','couponName','couponRule','couponThreshold','couponBasis','couponScope','couponTime','couponMember','couponStacking','couponApplied','couponEligible','couponBefore',...catalogFields].map(k=>[k,field])),['payable']),
   couponRowResource:string(200),searchBy:enumOf('brand','store'),jdShelf:jdShelfSchema,subtotalBasis:enumOf('before_discount','after_discount','unknown'),feesSeparate:{anyOf:[boolean,{type:'null'}]}
 },['platform','entry','package','appVersion','device','account','point','access','selectors','fields','subtotalBasis','feesSeparate']),'Android 来源配置');
 
