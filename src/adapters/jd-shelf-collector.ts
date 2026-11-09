@@ -317,9 +317,12 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
         await screen.tap('entryCategory',current);actions.push('entryCategory');
       }
     }
-    // u2 读首页时“搜索”按钮的 class 可能是 TextView，先等外卖入口；入口也不在时再退回等搜索控件。
-    const ready=await screen.waitFor(['channel',src.homePoint ? 'homePoint' : 'point'],{onLaunch:true,timeoutMs:25_000})
-      .catch(async()=>await screen.waitFor(['home'],{onLaunch:true,timeoutMs:10_000}));
+    // u2 读首页时控件 class 可能与配置不同；任一首页特征出现即视为就绪，避免死等单一控件。
+    const ready=await screen.waitFor(['channel'],{onLaunch:true,timeoutMs:20_000}).catch(async()=>{
+      const probe=await screen.nodes(true).catch(()=>[] as UiNode[]);
+      if (screen.selector('home',probe,false)||screen.selector('homePoint',probe,false)||screen.selector('point',probe,false)) return probe;
+      return await screen.waitFor(['home'],{onLaunch:true,timeoutMs:10_000});
+    });
     return {value:ready,data:{reusedHome:!!(homeEntry||categoryEntry),entryActions:actions}};
   });
   const candidates=searchEntry ? [] : await stage(emit,'brand_search',async()=>{
@@ -384,7 +387,8 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
       const fuzzyKey=normalizeKey(input.brand);
       const findCard=(list:UiNode[])=>list.filter(node=>{
         const label=normalizeKey(textOf(node));
-        return label.length>=2 && label.includes(fuzzyKey) && node.bounds.width>0 && node.bounds.height>0;
+        // 排除顶部搜索框里的同名文本（top 小于 8% 屏高），只认真正的门店卡片。
+        return label.length>=2 && label.includes(fuzzyKey) && node.bounds.width>0 && node.bounds.height>0 && node.bounds.top>device.height*.08;
       }).sort((a,b)=>b.bounds.top-a.bounds.top)[0];
       let textNode=findCard(nodes);
       if (!textNode) {
