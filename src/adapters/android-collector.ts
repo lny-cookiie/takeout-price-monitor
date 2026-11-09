@@ -597,8 +597,16 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           stepStart('checkout');
           await unavailability(nodes);
           note('checkout','定位结算入口并核对报价。');
-          const couponEntry=!screen.selector('checkout',nodes,false)&&screen.find({text:'领券结算，按钮',className:'TextView'},nodes,false);
-          const couponAllowed=!!(task.specified?.source==='trial'&&task.specified.couponCheckoutConsent&&context.couponPolicy==='claim_on_checkout');
+          const buyNowMode=!!source.selectors.buyNow;
+          let couponEntry:UiNode|null=null, couponAllowed=false;
+          if (buyNowMode) {
+            // 立即购买已直达结算页：跳过“去结算”入口，直接等结算页字段。
+            nodes=await screen.waitFor(['checkoutStage','point','delivery'],{timeoutMs:30_000});
+            inCheckout=true;
+          } else {
+          const couponNode=!screen.selector('checkout',nodes,false)&&screen.find({text:'领券结算，按钮',className:'TextView'},nodes,false);
+          couponEntry=couponNode||null;
+          couponAllowed=!!(task.specified?.source==='trial'&&task.specified.couponCheckoutConsent&&context.couponPolicy==='claim_on_checkout');
           if(!screen.selector('checkout',nodes,false)&&!(couponEntry&&couponAllowed)) {
             const controls=nodes.filter(n=>/结算|起送|还差|去预约|休息中/.test(textOf(n))&&textOf(n).length<100);
             const frame=controls.length?await screen.capture(controls):null;
@@ -621,6 +629,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           inCheckout = true;
           if(couponEntry&&couponAllowed){emit?.({phase:'coupon_checkout',state:'started',data:{policy:context.couponPolicy,reference:task.specified!.couponCheckoutConsent!.reference}});await screen.couponCheckout(nodes);}
           else await screen.tap('checkout',nodes);
+          }
           nodes=await screen.waitFor(['checkoutStage','point','delivery',source.selectors.checkoutLine ? 'checkoutLine' : 'cartLine',
             source.selectors.checkoutQuantity ? 'checkoutQuantity' : 'quantity']);
           const stage = screen.selector('checkoutStage',nodes)!;
