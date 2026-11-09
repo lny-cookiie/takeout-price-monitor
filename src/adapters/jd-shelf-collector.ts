@@ -323,11 +323,15 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     await screen.tap('search',await screen.waitFor(['search'],{timeoutMs:8_000}));
     const inputNodes=await screen.waitFor(['searchInput']);
     await screen.tap('searchInput',inputNodes);
-    await screen.device.search(storeSearchQuery,signal,!src.searchSubmit);
-    if (src.searchSubmit && src.searchValue) {
-      const value={...src.searchValue,text:storeSearchQuery};
-      const typed=await waitFor(screen,signal,ns=>screen.find(value,ns,false) && screen.selector('searchSubmit',ns,false) ? ns : undefined);
-      await screen.tap('searchSubmit',typed);
+    // 输入品牌名后直接回车提交：页面上的“搜索”按钮 className 与配置不一致，点按钮会等待超时。
+    await screen.device.search(storeSearchQuery,signal,true);
+    // 部分版本回车不提交，页面仍停在搜索建议页；此时点右上角“搜索”按钮。
+    await wait(900,undefined,{signal});
+    const stillSuggest=await screen.nodes(true).catch(()=>[] as UiNode[]);
+    if (stillSuggest.some(node=>/搜索发现|换一批|约\d+个结果/.test(textOf(node)))) {
+      const viewport=await screen.device.size();
+      await screen.device.tap(viewport.width*.88,viewport.height*.076);
+      await wait(900,undefined,{signal});
     }
     if (cal.pilot) return {value:[],data:{query:input.brand}};
     const found=await waitFor(screen,signal,ns=>searchCandidates(screen,cal,ns,input));
@@ -661,7 +665,13 @@ export async function findJdMenuItem(screen:ReviewedScreen,store:Supply['store']
             n.bounds.top+n.bounds.height<=root.bounds.top+root.bounds.height*.89;
         }).filter(n=>!n.children.some(c=>normalize(textOf(c).split(/[，,]/)[0]??'')===normalize(target.name)));
         if(candidates.length>1)throw new CollectionError('ambiguous_control','blocked');
-        if(candidates.length===1){await tapNode(screen,candidates[0]!,scanSignal);return true;}
+        if(candidates.length===1){
+          await tapNode(screen,candidates[0]!,scanSignal);
+          // 商品详情弹窗是原生渲染，u2 能读规格与“加入购物车”；dump 在详情页会整次超时。
+          await screen.device.setTreeMode?.('u2').catch(()=>undefined);
+          await wait(600,undefined,{signal});
+          return true;
+        }
       }
       const {rows}=menuRows(screen,cal,root,store);
       const matching=rows.filter(v=>{
