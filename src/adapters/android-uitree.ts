@@ -242,7 +242,10 @@ export class AndroidUiTreeReader {
     await this.ensure();
     const startedAt = Date.now();
     const response = await httpRequest(this.port, 'POST', '/jsonrpc/0', {
-      jsonrpc: '2.0', id: 1, method: 'dumpWindowHierarchy', params: [true, 50],
+      // 第三个参数 rootInActiveWindow=true 只返回当前活动窗口层级。
+      // 缺省时 u2 会返回全部窗口，门店页（京东小程序 MantoLightActivity）的层级会被
+      // 系统通知等窗口挡掉，导致找不到"商家"标签和商品节点。
+      jsonrpc: '2.0', id: 1, method: 'dumpWindowHierarchy', params: [true, 200, true],
     }, this.requestTimeoutMs);
     if (response.status !== 200) throw new Error(`u2_http_${response.status}`);
     const payload = JSON.parse(response.text) as { result?: unknown; error?: { message?: string } };

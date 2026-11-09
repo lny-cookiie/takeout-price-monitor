@@ -95,6 +95,8 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
   // 常驻读屏：u2 server 单次读取 0.1-0.3 秒，明显快于 uiautomator dump（每次约 2.7 秒）。
   // 服务不可用或初始化失败时静默回退到 Midscene 的 dump 链路，保证功能不受影响。
   let treeReader: Promise<AndroidUiTreeReader|null>|null=null;
+  // ANDROID_UITREE=legacy 可强制回到 uiautomator dump 链路，用于对比或回滚。
+  const useResidentTree=(process.env.ANDROID_UITREE??'resident')!=='legacy';
   const getTreeReader=()=>treeReader ??= AndroidUiTreeReader.create({serial:source.device,adbPath:adb()}).catch(()=>null);
   const beforeInput=()=>{
     // Cart restoration owns a separate deadline after collection is cancelled.
@@ -105,10 +107,12 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
   };
   return {
     getUITree:async()=>{
-      const reader=await getTreeReader();
-      if(reader){
-        try{return await reader.read();}
-        catch{/* 常驻服务异常时回退到原始 dump 链路 */}
+      if(useResidentTree){
+        const reader=await getTreeReader();
+        if(reader){
+          try{return await reader.read();}
+          catch{/* 常驻服务异常时回退到原始 dump 链路 */}
+        }
       }
       return device.getUITree();
     },
