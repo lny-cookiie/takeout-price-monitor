@@ -316,11 +316,7 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     await stage(emit,'brand_model_match',async()=>{
       const results=()=>waitFor(screen,signal,ns=>{
         if (!matchingQuery(ns)) return undefined;
-        if (pilot.resultAnchor) return searchAnchor(ns) ? ns : undefined;
-        // 读屏提速后，搜索框出现并不代表结果列表已加载；必须等结果容器出现且有卡片，
-        // 否则会在 loading 空白页上做模型定位，稳定触发 model_location_mismatch。
-        const root=oneAnchor(cal.searchResults,ns);
-        return root && anchors(cal.resultCard,scoped(root,screen.source)).length ? ns : undefined;
+        return !pilot.resultAnchor || searchAnchor(ns) ? ns : undefined;
       });
       let nodes=searchEntry ?? await results();
       const device=await screen.device.size();
@@ -343,12 +339,8 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
       const dimensions=await sharp(area).metadata();
       const proof=await evidenceStore.save(randomUUID(),'jd_search',area,input.brand,'live');
       const [x,y]=await model.locate(attemptId,area,pilot.resultLabel,signal,[proof.id]);
-      const inBand=x>dimensions.width*.25 && x<dimensions.width*.83 && y>dimensions.height*.03 && y<dimensions.height*.15;
-      const queryVisible=matchingQuery(await screen.nodes());
-      if (!inBand || !queryVisible) {
-        emit?.({phase:'brand_model_match',state:'failed',errorCode:'model_location_mismatch',data:{x,y,w:dimensions.width,h:dimensions.height,inBand,queryVisible}});
-        throw new CollectionError('model_location_mismatch');
-      }
+      if (!(x>dimensions.width*.25 && x<dimensions.width*.83 && y>dimensions.height*.03 && y<dimensions.height*.15) ||
+          !matchingQuery(await screen.nodes())) throw new CollectionError('model_location_mismatch');
       signal.throwIfAborted();
       await screen.device.tap(device.width*x/dimensions.width,device.height*top/height+device.width*y/dimensions.width);
       return {value:null,data:{query:input.brand},evidenceIds:[proof.id]};
