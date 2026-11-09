@@ -633,6 +633,12 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           nodes=await screen.waitFor(['checkoutStage','point','delivery',source.selectors.checkoutLine ? 'checkoutLine' : 'cartLine',
             source.selectors.checkoutQuantity ? 'checkoutQuantity' : 'quantity']);
           const stage = screen.selector('checkoutStage',nodes)!;
+          // 诊断：导出结算页完整节点清单，用于定位商品金额/配送费/打包费等字段节点。
+          try {
+            const {writeFile}=await import('node:fs/promises');
+            const rows=nodes.map(n=>`${(n.attrs.class??'').split('.').at(-1)}|${n.attrs['resource-id']??''}|${textOf(n)}`);
+            await writeFile(`.runtime/checkout-tree-${Date.now()}.txt`,rows.join('\n'));
+          } catch {}
           screen.selector('point',nodes);
           screen.selector('delivery',nodes);
           await unavailability(nodes);
