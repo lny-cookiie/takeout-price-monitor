@@ -2,9 +2,10 @@ import { execFile } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { AndroidDevice } from '@midscene/android';
-import type { UITreeSnapshot } from '@midscene/core';
+import type { UiNode, UITreeSnapshot } from '@midscene/core';
 import { CollectionError } from '../domain/contracts.js';
 import type { AndroidSource } from './android-source.js';
+import { AndroidUiTreeReader } from './android-uitree.js';
 
 const run=promisify(execFile);
 const adb=()=>process.env.MIDSCENE_ADB_PATH || 'adb';
@@ -38,6 +39,8 @@ export async function installedAppVersion(serial:string,packageName:string,signa
 }
 export interface AndroidSession {
   getUITree():Promise<UITreeSnapshot>;
+  /** 切换读屏通道：u2（原生页面，即时快照）或 dump（WebView 页面，等待空闲） */
+  setTreeMode?(mode:'u2'|'dump'):Promise<void>;
   size():Promise<{width:number;height:number}>;
   launch(reset?:boolean):Promise<void>;
   tap(x:number,y:number):Promise<void>;
@@ -98,8 +101,50 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
       const {stdout}=await run(adb(),[...args,'shell','dumpsys','window'],{timeout:4000,windowsHide:true,signal:inputSignal});return stdout;
     },source.package,inputSignal);
   };
+  // 混合读屏：原生页面（首页/外卖频道/列表）用 u2 即时快照，WebView 页面（门店/详情/结算）用 dump。
+  // 两者互斥（u2 占用无障碍时 dump 失败），切换时停/起 u2 服务。
+  let u2: AndroidUiTreeReader | null = null;
+  let treeMode: 'u2' | 'dump' = 'dump';
+  const countTexts = (node: UiNode): number => {
+    const text = String(node.attrs.text ?? node.attrs['content-desc'] ?? '').trim();
+    return (text ? 1 : 0) + node.children.reduce((sum, child) => sum + countTexts(child), 0);
+  };
+  const ensureU2 = async (): Promise<AndroidUiTreeReader | null> => {
+    if (!u2) u2 = await AndroidUiTreeReader.create({ serial: source.device, adbPath: adb() }).catch(() => null);
+    return u2;
+  };
+  const stopU2 = async (): Promise<void> => {
+    await run(adb(), ['-s', source.device, 'shell', 'pkill -f com.wetest.uia2'], { timeout: 4000, windowsHide: true }).catch(() => undefined);
+    await wait(1500);
+  };
+  const setTreeMode = async (mode: 'u2' | 'dump'): Promise<void> => {
+    if (mode === treeMode) return;
+    if (mode === 'u2') {
+      if (!(await ensureU2())) return;
+    } else {
+      await stopU2();
+    }
+    treeMode = mode;
+  };
+  const readTree = async (): Promise<UITreeSnapshot> => {
+    if (treeMode === 'u2') {
+      const reader = await ensureU2();
+      if (reader) {
+        try {
+          const tree = await reader.read();
+          if (countTexts(tree.root) > 0) return tree;
+          // u2 读不出 WebView 内容时自动回落到 dump
+          await setTreeMode('dump');
+        } catch {
+          await setTreeMode('dump');
+        }
+      }
+    }
+    return device.getUITree();
+  };
   return {
-    getUITree:()=>device.getUITree(),
+    getUITree:()=>readTree(),
+    setTreeMode,
     size:()=>device.size(),
     async launch(reset=false){
       await prepareAndroidDisplay(async command=>{

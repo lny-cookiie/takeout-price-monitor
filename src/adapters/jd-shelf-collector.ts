@@ -210,6 +210,8 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
   }
   async function verifyPilotStore(details:UiNode|undefined,reused:boolean,visible?:ReturnType<typeof pilotIdentity>,onMenu=false,current?:UiNode[]) {
     return stage(emit,'store_verify',async()=>{
+      // 门店页是小程序 WebView，u2 即时快照读不到内部节点；进入门店后切回 dump 通道。
+      await screen.device.setTreeMode?.('dump').catch(()=>undefined);
       let found=visible;
       if (!found) {
         const size=await screen.device.size();

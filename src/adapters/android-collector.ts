@@ -42,7 +42,17 @@ export class ReviewedScreen {
     this.signal.throwIfAborted();
     if(!fresh&&this.cachedNodes&&Date.now()-this.cachedAt<500){this.metrics.cacheHits++;return this.cachedNodes;}
     const start=Date.now();this.metrics.treeReads++;
-    const tree = await this.device.getUITree().catch(()=>{ throw new CollectionError('screen_unreadable'); }).finally(()=>{this.metrics.treeMs+=Date.now()-start;});
+    let tree;
+    for(let attempt=1;;attempt++){
+      try{tree=await this.device.getUITree();break;}
+      catch{
+        // 大促页面动画/详情页加载期间 dump 会整次超时；等页面稳定后重读，不要把「还没就绪」当成读屏不可用。
+        if(attempt>=3){this.metrics.treeMs+=Date.now()-start;throw new CollectionError('screen_unreadable');}
+        this.metrics.retries++;
+        await wait(1_500,undefined,{signal:this.signal});
+      }
+    }
+    this.metrics.treeMs+=Date.now()-start;
     this.signal.throwIfAborted();
     const nodes = flatten(tree.root);
     const own = nodes.filter(n=>n.attrs.package===this.source.package && n.bounds.width>0 && n.bounds.height>0);
@@ -300,6 +310,8 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         stepStart('device_connect');
         device = await connect(source,signal);
         signal.throwIfAborted();
+        // 采集从首页/外卖频道等原生页面开始，用 u2 即时快照；读到 WebView 页面会自动回落到 dump。
+        await device.setTreeMode?.('u2').catch(()=>undefined);
         stepEnd();
         const query=task.jdOrigin?.brand ?? (source.searchBy==='brand' ? store.brand : store.name);
         const vars = {query,store:store.name,address:store.address,item:item.name,spec:item.spec,quantity:'1',
