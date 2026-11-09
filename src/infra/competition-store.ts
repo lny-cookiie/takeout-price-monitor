@@ -298,7 +298,8 @@ export class CompetitionStore {
     const target=this.currentTarget(entry.id), profile=this.get<Profile>('market_profiles',input.profileId);
     if(normalize(profile.city).replace(/市$/,'')!==normalize(entry.city).replace(/市$/,''))throw new Error('配送城市必须与门店城市一致');
     const source=this.sources.get('jd'), now=new Date(), identity=this.jdIdentity(entry.savedStoreId),anchor=identity?.store;
-    if(input.couponCheckoutConsent&&(entry.source!=='trial'||source?.jdShelf?.pilot?.storeId!==entry.savedStoreId))throw new Error('领券结算授权只适用于已登记的本机试采门店');
+    // 用户确认同城门店价差很小：领券结算授权按品牌+城市生效，不再要求与登记门店编号一致。
+    if(input.couponCheckoutConsent&&entry.source!=='trial')throw new Error('领券结算授权只适用于已登记的本机试采门店');
     const hour=Number(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',hour:'numeric',hourCycle:'h23'}).format(now));
     const meal:Meal=hour<16?'lunch':hour<21?'dinner':'night';
     const pilot=source?.jdShelf?.pilot, reviewed=pilot?.storeId===entry.savedStoreId?pilot:undefined;
