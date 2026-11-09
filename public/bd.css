@@ -1,0 +1,41 @@
+/* BD 报价采集页 —— 复用 ue.css 的设计系统，只补页面专属布局 */
+.bd-layout{display:grid;grid-template-columns:minmax(320px,420px) minmax(0,1fr);gap:20px;align-items:start}
+.bd-form-panel .panel-body{padding:0 22px 22px}
+.bd-form-panel .field{margin-bottom:15px}
+.platforms{border:0;padding:0;margin:4px 0 16px}
+.platforms legend{font-size:12px;color:#807568;margin-bottom:8px;padding:0}
+.platform-card{display:flex;align-items:center;gap:11px;border:1px solid #ddd4c6;border-radius:7px;padding:11px 13px;margin-bottom:8px;cursor:pointer;background:#fff;transition:border-color .15s,background .15s}
+.platform-card:hover{border-color:#c9b9a3;background:#fcfaf7}
+.platform-card:has(input:checked){border-color:#ce8b68;background:#fff2e8}
+.platform-card input{accent-color:var(--orange);width:15px;height:15px;flex:none}
+.platform-card .p-name{font-weight:600;font-size:13px}
+.platform-card .p-desc{font-size:11px;color:#9a8f80;margin-left:auto;white-space:nowrap}
+.bd-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.bd-actions .primary{min-width:120px}
+#form-hint{color:#a29583}
+.bd-run-panel .panel-body{padding:0 22px 22px}
+.run-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;border:1px solid var(--line);border-radius:7px;padding:14px 16px;margin-bottom:16px;background:#fbfaf8}
+.run-summary div span{display:block;font-size:11px;color:#9a8f80;margin-bottom:6px}
+.run-summary div strong{font-size:13px;font-weight:600}
+.platform-runs{display:grid;gap:8px;margin-bottom:16px}
+.platform-run{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:6px;padding:11px 13px;background:#fff}
+.platform-run .pr-name{font-size:13px;font-weight:600;min-width:76px}
+.pr-bar{flex:1;height:6px;border-radius:6px;background:#eee9df;overflow:hidden}
+.pr-bar i{display:block;height:100%;width:0;background:#b9956c;transition:width .35s ease}
+.platform-run.running .pr-bar i{background:var(--orange)}
+.platform-run.success .pr-bar i{background:var(--green)}
+.platform-run.failed .pr-bar i{background:var(--red)}
+.pr-state{font-size:12px;color:#8a8277;min-width:74px;text-align:right}
+.platform-run.success .pr-state{color:var(--green)}
+.platform-run.failed .pr-state{color:var(--red)}
+.log-head{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#807568;margin-bottom:7px}
+.run-log{background:#f3eee5;border:1px solid #e5d8c7;border-radius:5px;padding:13px 15px;font:12px/1.85 "Cascadia Mono","SFMono-Regular",Consolas,"Microsoft YaHei",monospace;color:#5d5347;max-height:300px;overflow:auto;margin:0;white-space:pre-wrap;word-break:break-word}
+.run-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
+.run-actions[hidden]{display:none}
+#bd-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;background:#4a3a28;color:#fff;font-size:13px;border-radius:6px;box-shadow:0 5px 20px #0002;max-width:90vw}
+#bd-toast:not(:empty){padding:12px 20px}
+@media(max-width:900px){.bd-layout{grid-template-columns:1fr}.run-summary{grid-template-columns:1fr 1fr}}
+@media(max-width:560px){.bd-layout{gap:14px}.run-summary{grid-template-columns:1fr}.platform-run{flex-wrap:wrap}.pr-bar{order:3;flex-basis:100%}}
+.nav-item{display:flex;align-items:center;padding:0 15px;font-size:13px;color:#776f64;text-decoration:none;border-bottom:3px solid transparent}
+.nav-item:hover{color:var(--orange);text-decoration:none;background:#faf7f2}
+@media(max-width:900px){.nav-item{padding:0 13px}}

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><meta name="description" content="BD 报价采集：输入城市、品牌、门店与爆品，勾选平台后开始采集并实时查看进度。"><title>BD 报价采集 · 三平台比价</title><link rel="stylesheet" href="/ue.css"><link rel="stylesheet" href="/bd.css"></head><body><a class="skip" href="#main">跳转到内容</a>
+<header class="topbar"><div class="brand"><span class="brand-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>BD 报价采集</span></div>
+<nav class="nav" aria-label="主导航"><button class="active" type="button">采集录入</button><a class="nav-item" href="/ue">UE 工作台</a></nav>
+<div class="top-right"><span class="demo-tag">原型 · 未接后端</span><span class="avatar" aria-hidden="true">BD</span></div></header>
+<main id="main" class="workspace">
+  <div class="heading"><div><div class="eyebrow">BD 一线工具</div><h1>三平台比价采集</h1>
+    <p class="subtitle">填写负责的城市、品牌与爆品，选择要比价的平台，开始采集后会实时显示每个平台的进度，失败可直接重跑。</p></div>
+    <div class="heading-actions"><a href="/ue"><button type="button">打开 UE 工作台</button></a></div></div>
+
+  <div class="bd-layout">
+    <section class="panel bd-form-panel" aria-labelledby="form-title">
+      <div class="panel-head"><div class="panel-title"><h2 id="form-title">检索信息</h2><span class="panel-note">带 * 为必填</span></div></div>
+      <div class="panel-body">
+        <form id="bd-form" autocomplete="off">
+          <div class="fields">
+            <label class="field"><span>城市 *</span><input name="city" required placeholder="如 天津市"><small>采集时按该城市定位</small></label>
+            <label class="field"><span>品牌 *</span><input name="brand" required placeholder="如 麦当劳"><small>京东搜索框只认品牌名</small></label>
+            <label class="field"><span>门店（可选）</span><input name="store" placeholder="如 鞍山西道店"><small>不填则由系统在同城门店中匹配</small></label>
+            <label class="field"><span>爆品名称 *</span><input name="item" required placeholder="如 板烧鸡腿堡"><small>要采集的单个商品名</small></label>
+          </div>
+          <fieldset class="platforms"><legend>选择采集平台（至少一个）</legend>
+            <label class="platform-card"><input type="checkbox" name="platform" value="jd" checked><span class="p-name">京东</span><span class="p-desc">京东外卖 · 已就绪</span></label>
+            <label class="platform-card"><input type="checkbox" name="platform" value="meituan"><span class="p-name">美团</span><span class="p-desc">美团外卖 · 待接入</span></label>
+            <label class="platform-card"><input type="checkbox" name="platform" value="taobao"><span class="p-name">淘宝闪购</span><span class="p-desc">淘宝闪购 · 待接入</span></label>
+          </fieldset>
+          <div class="bd-actions"><button class="primary" type="submit" id="start-btn">开始采集</button><button type="button" id="reset-btn">清空</button><span class="muted smalltext" id="form-hint">选择 1–3 个平台</span></div>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel bd-run-panel" id="run-panel" hidden aria-live="polite" aria-labelledby="run-title">
+      <div class="panel-head"><div class="panel-title"><h2 id="run-title">采集进度</h2><span class="panel-note" id="run-state">排队中</span></div>
+        <div class="actions"><button type="button" class="small" id="open-result" hidden>查看结果</button></div></div>
+      <div class="panel-body">
+        <div class="run-summary" id="run-summary"></div>
+        <div class="platform-runs" id="platform-runs"></div>
+        <div class="log-head"><span>实时日志</span><span class="muted smalltext" id="log-count">0 条</span></div>
+        <pre class="run-log" id="run-log" aria-live="polite"></pre>
+        <div class="run-actions" id="run-actions" hidden><button class="primary" type="button" id="retry-btn">重跑失败平台</button><button type="button" id="new-btn">重新录入</button><a href="/ue"><button type="button">去 UE 工作台看结果</button></a></div>
+      </div>
+    </section>
+  </div>
+</main>
+<div id="bd-toast" role="status" aria-live="polite"></div>
+<script type="module" src="/bd.js"></script></body></html>
