@@ -33,7 +33,7 @@ const required = ['home','search','searchInput','result','store','address','item
 const catalogFields = ['catalogStore','catalogBrand','catalogCity','catalogAddress','catalogItem','catalogSpec','catalogOptions','catalogKind'] as const;
 type CatalogField = typeof catalogFields[number];
 const optional = ['cart','cartPanel','cartCount','checkoutLine','checkoutQuantity','soldOut','closed','outOfRange','minimum',
-  'channel','entryCategory','homePoint','searchValue','searchSubmit','category','itemDetail','dismissItemDetail','spec','checkoutSpec','options','composition','increase','menuSearch'] as const;
+  'channel','entryCategory','homePoint','searchValue','searchSubmit','category','itemDetail','dismissItemDetail','spec','checkoutSpec','options','composition','increase','menuSearch','buyNow'] as const;
 type RequiredSelector = typeof required[number];
 type OptionalSelector = typeof optional[number];
 const selector = object({text:string(200,0),resource:string(200),className:string(120),withDescription:boolean,textHash:{type:'string',pattern:'^[a-f0-9]{64}$'},textPrefix:boolean},['text']);

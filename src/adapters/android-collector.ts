@@ -368,28 +368,38 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         }
         note('store','核对门店名称及营业地址。');
         stepStart('sku_match');
-        if (!screen.selector('cartEmpty',nodes,false)) {
+        // 立即购买模式不经过购物车，无需清空；普通加购模式才要求购物车干净。
+        if (!source.selectors.buyNow && !screen.selector('cartEmpty',nodes,false)) {
           // 门店购物车有残留商品（上次测试加购的）：先清空再继续，避免每次失败后人工处理。
+          const t0=Date.now();
+          const mark=(label:string)=>console.error('[diag] clear-cart',label,Date.now()-t0,'ms');
+          mark('start');
           const openCart=await screen.nodes(true).catch(()=>[] as UiNode[]);
+          mark('read1');
           if (screen.selector('cart',openCart,false)) {
             await screen.tap('cart',openCart);
             await wait(800,undefined,{signal});
+            mark('opened');
             const panel=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            mark('read2');
             const clearNode=panel.find(node=>/清空购物车/.test(textOf(node)));
             if (clearNode) {
               const cb=clearNode.bounds;
               await screen.device.tap(cb.left+cb.width/2,cb.top+cb.height/2);
-              await wait(900,undefined,{signal});
-              const dialog=await screen.nodes(true).catch(()=>[] as UiNode[]);
-              const confirm=dialog.find(node=>textOf(node).trim()==='清空');
-              if (confirm) {
-                const db=confirm.bounds;
-                await screen.device.tap(db.left+db.width/2,db.top+db.height/2);
-              }
-              await wait(900,undefined,{signal});
+              await wait(2_400,undefined,{signal});
+              mark('clicked-clear');
+              // 确认弹窗动画期间读屏会卡 50 秒以上，这里按相对位置盲点“清空”确认按钮，点两次防动画未出现。
+              const size=await screen.device.size();
+              const confirmX=size.width*.71, confirmY=size.height*.576;
+              await screen.device.tap(confirmX,confirmY);
+              await wait(1_000,undefined,{signal});
+              await screen.device.tap(confirmX,confirmY);
+              await wait(1_200,undefined,{signal});
+              mark('confirmed');
             }
           }
-          nodes=await screen.nodes(true);
+          nodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
+          mark('read4');
           if (!screen.selector('cartEmpty',nodes,false)) throw new CollectionError('cart_not_owned','blocked');
         }
         if (task.jdOrigin && jd) await jd.findJdMenuItem(screen,store,item,signal);
@@ -535,11 +545,21 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           return emptyProof;
         };
         let inCheckout = false;
+        let cartProof:Evidence|undefined;
         try {
           note('cart','核对专用购物车与商品份数。');
           stepStart('cart');
           cleanup = 'quarantined';
           emit?.({phase:'cart_add_intent',state:'started',data:{item:item.name,spec:item.spec,quantity:1}});
+          const buyNowNode=source.selectors.buyNow ? screen.selector('buyNow',nodes,false) : null;
+          if (buyNowNode) {
+            // 用户要求：详情页直接点“立即购买”进结算页，跳过加购与购物车，避免残留商品和弹窗干扰。
+            await screen.tap('buyNow',nodes);
+            emit?.({phase:'cart_add_intent',state:'succeeded',data:{mode:'buy_now'}});
+            cleanup='untouched';
+            nodes=await screen.waitFor(['checkoutStage','point','delivery'],{timeoutMs:25_000});
+            inCheckout=true;
+          } else {
           await screen.tap('add',nodes);
           if (source.selectors.dismissItemDetail) {
             const afterAdd=await screen.nodes();
@@ -565,8 +585,9 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           const [cartLine,quantityNode] = ownedCart(nodes) as [UiNode,UiNode];
           emit?.({phase:'cart_add_intent',state:'succeeded',data:{quantity:context.quantity}});
           const cartFrame = await screen.capture([cartLine,quantityNode]);
-          const cartProof = await evidenceStore.save(randomUUID(),'cart',cartFrame.image,[cartLine,quantityNode].map(textOf).join('\n'),'live',cartFrame.at);
-          stepEnd({state:'succeeded',data:{quantity:context.quantity},evidenceIds:[cartProof.id]});
+          cartProof = await evidenceStore.save(randomUUID(),'cart',cartFrame.image,[cartLine,quantityNode].map(textOf).join('\n'),'live',cartFrame.at);
+          stepEnd({state:'succeeded',data:{quantity:context.quantity},evidenceIds:cartProof?[cartProof.id]:[]});
+          }
           stepStart('checkout');
           await unavailability(nodes);
           note('checkout','定位结算入口并核对报价。');
@@ -582,7 +603,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           if (!source.jdShelf?.pilot && !couponEntry) {
             const control = screen.selector('checkout',nodes)!;
             const controlFrame = await screen.capture([control]);
-            const [x,y] = await model.locate(attemptId,controlFrame.image,textOf(control),signal,[cartProof.id]);
+            const [x,y] = await model.locate(attemptId,controlFrame.image,textOf(control),signal,cartProof?[cartProof.id]:[]);
             const rect = controlFrame.locations[0]!;
             if (!(x>=rect.left && x<=rect.left+rect.width && y>=rect.top && y<=rect.top+rect.height)) throw new CollectionError('model_location_mismatch');
             nodes = await snap(screen);
@@ -603,7 +624,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           const checkoutItems=ownedCart(nodes,true);
           if(couponEntry&&couponAllowed)emit?.({phase:'coupon_checkout',state:'succeeded',data:{policy:context.couponPolicy,action:'已点击领券结算，实际抵扣以结算证据为准'}});
           if(task.specified) {
-            const captured=await captureCheckout(screen,nodes,checkoutItems,evidenceStore,signal,[shopProof.id,optionProof.id,cartProof.id]);
+            const captured=await captureCheckout(screen,nodes,checkoutItems,evidenceStore,signal,[shopProof.id,optionProof.id,cartProof?.id??""]);
             evidence=captured.proofs[0]!;
             stepEnd({state:'succeeded',data:{pageCount:captured.frames.length},evidenceIds:captured.proofs.map(p=>p.id)});
             emit?.({phase:'model_verify',state:'started'});
@@ -620,7 +641,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
                 basket_items:[{product_id:frozen.target.id,name:item.name,variant:item.spec,quantity:1}],account_ref:task.account_ref,delivery_point_id:task.delivery_point_id,
                 entry_point:task.entry_point,evidence_refs:[read.evidence],contract_version:task.contract_version,collector_version:'android-0.4.0',
                 details:{components:read.components,subtotalBasis:read.basis,feesSeparate:read.feesSeparate,eta:read.eta,coupons:read.coupons,couponCandidates:read.couponCandidates,
-                  missing:read.missing,reconciled:read.reconciled,contextEvidence:cartProof,storeEvidence:shopProof,itemEvidence:optionProof,fieldResults:read.fieldResults,supplementaryEvidence:read.supplementaryEvidence}};
+                  missing:read.missing,reconciled:read.reconciled,contextEvidence:cartProof!,storeEvidence:shopProof,itemEvidence:optionProof,fieldResults:read.fieldResults,supplementaryEvidence:read.supplementaryEvidence}};
               await menuJob;
               quoteReadyAt=new Date().toISOString();status=complete?'success':'partial';availability='available';
               emit?.({phase:'model_verify',state:'succeeded',data:{checkoutFen:read.total,verifiedFields:Object.values(read.fieldResults).filter(f=>f.status==='verified').length},evidenceIds:captured.proofs.map(p=>p.id)});
@@ -635,7 +656,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           const frame = await screen.capture([stage,...checkoutItems,...Object.entries(fields).flatMap(([k,v])=>v && k!=='current' && k!=='reference' ? [v.node] : []),
             ...couponData.flatMap(row=>Object.values(row).flatMap(v=>v?.node ?? []))]);
           evidence = await evidenceStore.save(randomUUID(),'checkout',frame.image,
-            JSON.stringify({fields:Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v?.raw ?? null])),coupons:couponData.map(row=>Object.fromEntries(Object.entries(row).map(([k,v])=>[k,v?.raw ?? null]))),contextProof:[shopProof.id,optionProof.id,cartProof.id]}),'live',frame.at);
+            JSON.stringify({fields:Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v?.raw ?? null])),coupons:couponData.map(row=>Object.fromEntries(Object.entries(row).map(([k,v])=>[k,v?.raw ?? null]))),contextProof:[shopProof.id,optionProof.id,cartProof?.id??""]}),'live',frame.at);
           stepEnd({state:'succeeded',evidenceIds:[evidence.id]});
           stepStart('model_verify');
           const result = await model.json(attemptId,'checkout_read','读取截图中结算应付金额的原文，只返回 { "payable": "金额原文" }，未显示则为 null。',{field:source.fields.payable.prefix},priceCheck,{image:frame.image,signal,evidenceIds:[evidence.id]});
@@ -675,7 +696,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             observed_at:frame.at,collected_at:new Date().toISOString(),value_origin:'observed',quote_valid:true,detail_complete:complete,
             basket_items:[{product_id:context.target.id,name:item.name,variant:item.spec,quantity:context.quantity}],account_ref:task.account_ref,
             delivery_point_id:task.delivery_point_id,entry_point:task.entry_point,evidence_refs:[evidence],contract_version:task.contract_version,collector_version:'android-0.2.0',
-            details:{components,subtotalBasis:source.subtotalBasis,feesSeparate:source.feesSeparate,eta,coupons:coupons.length ? coupons : null,missing,reconciled:known,contextEvidence:cartProof,storeEvidence:shopProof,itemEvidence:optionProof}
+            details:{components,subtotalBasis:source.subtotalBasis,feesSeparate:source.feesSeparate,eta,coupons:coupons.length ? coupons : null,missing,reconciled:known,contextEvidence:cartProof!,storeEvidence:shopProof,itemEvidence:optionProof}
           };
           note('quote','已核对结算应付与页面证据。');
           status = complete ? 'success' : 'partial';
