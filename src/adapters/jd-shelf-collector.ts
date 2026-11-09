@@ -195,14 +195,16 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     return x>=.47 && x<=.55 && y>=.11 && y<=.16 && height>=size.height*.035 ? tab : undefined;
   }
   function pilotIdentity(ns:UiNode[]) {
-    const name=screen.find({text:pilot!.name,className:'TextView'},ns,false);
-    const address=screen.find({text:pilot!.address,className:'TextView'},ns,false);
+    // 页面文本可能带零宽空格或全角符号，门店名/地址用规范化包含匹配，避免精确匹配失败。
+    const name=ns.find(node=>normalizeKey(textOf(node)).includes(normalizeKey(pilot!.name)));
+    const address=ns.find(node=>normalizeKey(textOf(node)).includes(normalizeKey(pilot!.address)));
     const menu=screen.find({text:'外卖，未选中',className:'TextView'},ns,false);
-    return name && address && menu ? {name,address,menu} : undefined;
+    // 点“商家”后可能进入独立商家页，菜单页的“外卖，未选中”tab 不保证存在；门店名+地址已足够确认身份。
+    return name && address ? {name,address,menu} : undefined;
   }
   function pilotMenuIdentity(ns:UiNode[]) {
-    const name=screen.find({text:pilot!.name,className:'TextView'},ns,false);
-    const address=screen.find({text:pilot!.address,className:'TextView'},ns,false);
+    const name=ns.find(node=>normalizeKey(textOf(node)).includes(normalizeKey(pilot!.name)));
+    const address=ns.find(node=>normalizeKey(textOf(node)).includes(normalizeKey(pilot!.address)));
     const menu=screen.find({text:'外卖，已选中',className:'View'},ns,false);
     return name && address && menu ? {name,address,menu} : undefined;
   }
@@ -249,7 +251,8 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
       const currentRoot=onMenu && current ? oneAnchor(cal.menu,current) : undefined;
       if (currentRoot && menuRows(screen,cal,currentRoot,store).cardCount) nodes=current!;
       else {
-        if (!onMenu) await tapNode(screen,found.menu,signal);
+        // 商家页没有“外卖”tab 时用返回键回门店页，避免卡在商家信息页。
+        if (!onMenu) { if (found.menu) await tapNode(screen,found.menu,signal); else await screen.device.back(); }
         const menu=await menuAt(screen,cal,signal,store);
         nodes=menu.nodes;
       }
@@ -343,22 +346,26 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
         await screen.device.tap(header.x,header.y);
         return {value:null,data:{query:input.brand,method:'reviewed_store_header',reusedSearch:!!searchEntry},evidenceIds:[proof.id]};
       }
-      // 搜索结果页是原生页面，u2 能直接读到门店卡片；优先用控件树匹配，替代慢且易失败的模型定位。
-      // 门店名节点可能只渲染截断文本（例如“麦当劳”），长度阈值取 2；多个命中时取更靠下的结果卡片。
-      const storeKeys=['麦当劳',pilot.name].map(normalizeKey).filter(key=>key.length>=2);
-      const treeCandidates=nodes.filter(node=>{
+      // 只在结果里找配置门店全名：误点其他同名门店会在后续门店校验失败，不如明确报门店未找到。
+      const fullKey=normalizeKey(pilot.name);
+      const findCard=(list:UiNode[])=>list.filter(node=>{
         const label=normalizeKey(textOf(node));
-        if (label.length<2) return false;
-        if (!storeKeys.some(key=>label.includes(key))) return false;
-        return node.bounds.width>0 && node.bounds.height>0;
-      }).sort((a,b)=>b.bounds.top-a.bounds.top);
-      if (!treeCandidates.length) {
-        // 诊断：树匹配为空时记录页面文本样本，便于区分页面未就绪与文本格式问题。
-        const hits=nodes.filter(node=>normalizeKey(textOf(node)).includes('麦当劳')).slice(0,6).map(node=>({text:textOf(node).slice(0,20),top:Math.round(node.bounds.top),h:Math.round(node.bounds.height)}));
-        emit?.({phase:'brand_model_match',state:'started',data:{treeMatch:0,hits,total:nodes.length}});
+        return label.length>=4 && label.includes(fullKey) && node.bounds.width>0 && node.bounds.height>0;
+      }).sort((a,b)=>b.bounds.top-a.bounds.top)[0];
+      let textNode=findCard(nodes);
+      if (!textNode) {
+        // 目标门店可能不在首屏，滚动一屏再找一次。
+        await screen.device.swipe?.({x:device.width/2,y:device.height*.78},{x:device.width/2,y:device.height*.32},signal);
+        await wait(900,undefined,{signal});
+        nodes=await screen.nodes(true);
+        textNode=findCard(nodes);
       }
-      if (treeCandidates.length) {
-        const textNode=treeCandidates[0]!;
+      if (!textNode) {
+        const visible=nodes.filter(node=>normalizeKey(textOf(node)).includes('麦当劳')).slice(0,6).map(node=>textOf(node).slice(0,24));
+        emit?.({phase:'brand_model_match',state:'started',data:{storeNotFound:true,visible,total:nodes.length}});
+        throw new CollectionError('store_not_found','blocked');
+      }
+      {
         // 文本节点可能是顶部品牌栏或结果卡片标题；找包含它的可点击容器（真卡片）再点，避免点文字不跳转。
         const cx=textNode.bounds.left+textNode.bounds.width/2, cy=textNode.bounds.top+textNode.bounds.height/2;
         const containers=nodes.filter(node=>
@@ -381,7 +388,7 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
       const area=await sharp(screenshot).extract({left:0,top,width,height:cropHeight}).resize(640).png().toBuffer();
       const dimensions=await sharp(area).metadata();
       const proof=await evidenceStore.save(randomUUID(),'jd_search',area,input.brand,'live');
-      const [x,y]=await model.locate(attemptId,area,pilot.resultLabel,signal,[proof.id]);
+      const [x,y]=await model.locate(attemptId,area,pilot!.resultLabel,signal,[proof.id]);
       if (!(x>dimensions.width*.25 && x<dimensions.width*.83 && y>dimensions.height*.03 && y<dimensions.height*.15) ||
           !matchingQuery(await screen.nodes())) throw new CollectionError('model_location_mismatch');
       signal.throwIfAborted();
