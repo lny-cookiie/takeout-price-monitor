@@ -106,18 +106,18 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
   const find = async (pred: (n: U2Node) => boolean, timeoutMs = 20_000): Promise<U2Node | null> => {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
-      const ns = await waitStable();
-      // 点错打开分享/排序/支付页时立即退回，避免在错误页面上空等直到超时。
+      const ns = await waitStable(4);
+      // 点错打开分享/排序/支付页时立刻退回：守卫只做字符串匹配，延迟控制在 150ms 级别，不拖慢主链路。
       const guard = guardPage(ns.map(n => ({text: n.text, desc: n.desc})));
       if (guard.shouldBack) {
-        console.log(`[meituan] 遇到意外页面(${guard.kind})，返回重试`);
+        console.log(`[meituan] 遇到意外页面(${guard.kind})，立即返回`);
         await options.back();
-        await sleep(1200);
+        await sleep(350);
         continue;
       }
       const hit = ns.find(pred);
       if (hit) return hit;
-      await sleep(450);
+      await sleep(150);
     }
     return null;
   };
