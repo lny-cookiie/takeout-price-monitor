@@ -520,6 +520,10 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             emit?.({phase:'cart_surface',state:'succeeded',data:{itemDetail:!!(source.selectors.itemDetail&&screen.selector('itemDetail',afterAdd,false)),selectedSpec:!!screen.selector('selectedSpec',afterAdd,false),cartVisible:!!screen.selector('cart',afterAdd,false),detailDismiss:!!screen.selector('dismissItemDetail',afterAdd,false)}});
             if (screen.selector('dismissItemDetail',afterAdd,false)) await screen.tap('dismissItemDetail',afterAdd);
             else if(source.selectors.itemDetail&&screen.selector('itemDetail',afterAdd,false)&&screen.selector('add',afterAdd,false))await device.back();
+            // 点“关闭弹层”偶尔不生效，页面仍在详情页；用返回键兜底一次，避免等购物车控件超时。
+            await wait(600,undefined,{signal});
+            const left=await screen.nodes().catch(()=>[] as UiNode[]);
+            if (screen.selector('itemDetail',left,false)) { await device.back(); await wait(600,undefined,{signal}); }
           }
           nodes=source.selectors.cart ? await screen.waitFor(['cart']) : await screen.waitFor(['cartLine','quantity'],{inCart:true});
           if (source.selectors.cart) {
