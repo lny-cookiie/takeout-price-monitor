@@ -10,6 +10,7 @@ import type { ModelGateway } from '../infra/model.js';
 import { ReviewedScreen, resourceOf, textOf } from './android-collector.js';
 import type { AndroidSource, JdShelfCalibration, ShelfField, ShelfLocator } from './android-source.js';
 import { connectAndroid, type AndroidTransport } from './android-transport.js';
+import { searchCropRegion } from './jd-search-layout.js';
 
 const maximumScrolls=20, scanTimeoutMs=120_000;
 const unsafeText=/\b\d{11,}\b|收货地址|联系人|收货人|手机号|https?:|账号密码/;
@@ -334,8 +335,13 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
         await screen.device.tap(header.x,header.y);
         return {value:null,data:{query:input.brand,method:'reviewed_store_header',reusedSearch:!!searchEntry},evidenceIds:[proof.id]};
       }
-      const top=Math.round(height*.17);
-      const area=await sharp(screenshot).extract({left:0,top,width,height:Math.round(height*.55)}).resize(640).png().toBuffer();
+      // 优先按搜索结果容器的实际 bounds 计算模型输入区域；容器不可用时回退固定比例，
+      // 保证老页面仍可用（跨机型 P0-2，见 24 号计划 M1）。
+      const resultsRoot=oneAnchor(cal.searchResults,nodes);
+      const containerCrop=resultsRoot ? searchCropRegion(resultsRoot.bounds,device,{width,height}) : null;
+      const top=containerCrop?.top ?? Math.round(height*.17);
+      const cropHeight=containerCrop?.height ?? Math.round(height*.55);
+      const area=await sharp(screenshot).extract({left:0,top,width,height:cropHeight}).resize(640).png().toBuffer();
       const dimensions=await sharp(area).metadata();
       const proof=await evidenceStore.save(randomUUID(),'jd_search',area,input.brand,'live');
       const [x,y]=await model.locate(attemptId,area,pilot.resultLabel,signal,[proof.id]);
