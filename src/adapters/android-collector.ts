@@ -402,7 +402,9 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         }
         note('variant','核对商品规格、口味和套餐组成。');
         // 商品详情弹窗是原生渲染，u2 能读规格；dump 在详情页会整次超时。切不到 u2 就明确失败，不静默回落。
+        console.error('[diag] sku_match: switching to u2');
         await screen.device.setTreeMode?.('u2');
+        console.error('[diag] sku_match: u2 ready, waiting spec');
         try{nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,...(task.specified?{timeoutMs:6_000}:{})});}
         catch(error){
           const current=await screen.nodes();

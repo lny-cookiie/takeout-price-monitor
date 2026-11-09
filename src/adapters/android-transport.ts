@@ -133,13 +133,18 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
     if (treeMode === 'u2') {
       const reader = await ensureU2();
       if (reader) {
-        try {
-          const tree = await reader.read();
-          if (countTexts(tree.root) > 0) return tree;
-          // u2 读不出 WebView 内容时自动回落到 dump
-          await setTreeMode('dump');
-        } catch {
-          await setTreeMode('dump');
+        // 详情页刚打开时 u2 树可能是空的（页面还在加载）；短暂重试后再判定是否真的读不到。
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const tree = await reader.read();
+            if (countTexts(tree.root) > 0) return tree;
+            if (attempt < 3) { await wait(500); continue; }
+            await setTreeMode('dump');
+          } catch {
+            if (attempt < 3) { await wait(500); continue; }
+            await setTreeMode('dump');
+          }
+          break;
         }
       }
     }
