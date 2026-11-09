@@ -290,6 +290,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
       let observation: Observation | null = null, evidence: Evidence | null = null, market: MarketRead | undefined;
       let cleanup: AttemptResult['cleanup'] = 'untouched', status: AttemptResult['status'] = 'failed', error_code: string | null = null, availability = 'unknown';
       let device: AndroidSession | undefined, menuPriceReason:string|null|undefined;
+      let storeFreightFen:number|null=null;
       try {
         stepStart('source_check');
         note('source','核对来源使用范围及设备配置。');
@@ -340,6 +341,10 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           if(task.specified){store=verified.store;vars.store=store.name;vars.address=store.address;}
           nodes=verified.nodes;
           shopProof=verified.evidence;
+          // 门店页最底部的“满¥30运费¥3”就是配送费（与打包费合并显示），先记下来，结算页没有独立行时用它。
+          const freightNode=nodes.find(node=>/运费¥?\d+/.test(textOf(node)));
+          const freightMatch=freightNode?/运费¥?(\d+(?:\.\d+)?)/.exec(textOf(freightNode)):null;
+          storeFreightFen=freightMatch?Math.round(Number(freightMatch[1])*100):null;
           await unavailability(nodes);
         } else {
           note('launch','等待指定外卖入口和点位。');
@@ -651,13 +656,17 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             emit?.({phase:'model_verify',state:'started'});
             const frozen=context;
             checkoutJob=verifyCheckout(captured,model,attemptId,signal,source.subtotalBasis,source.feesSeparate).then(async read=>{
-              const component=(value:Reading|null):MoneyComponent=>value?{amount_fen:value.fen,raw_value:value.raw,basis:'separately_displayed',included_in:'checkout_payable'}:
+              const component=(value:{fen:number;raw:string}|null):MoneyComponent=>value?{amount_fen:value.fen,raw_value:value.raw,basis:'separately_displayed',included_in:'checkout_payable'}:
                 {amount_fen:null,raw_value:null,basis:'unknown',included_in:null};
-              const complete=read.components.delivery!==null&&read.components.packaging!==null;
+              // 门店页底部的“运费”与打包费在京东外卖合并展示；结算页没有独立行时用门店页读到的运费补上。
+              const freightFallback=storeFreightFen!==null?{fen:storeFreightFen,raw:(storeFreightFen/100).toFixed(2)}:null;
+              const deliveryValue=read.components.delivery??freightFallback;
+              const packagingValue=read.components.packaging??freightFallback;
+              const complete=deliveryValue!==null&&packagingValue!==null;
               observation={observation_id:randomUUID(),source_id:task.source_id,tenant_id:task.tenant_id,slot_id:task.slot_id,attempt_id:attemptId,platform,
                 store_id:task.store_id,basket_id:task.basket_id,scenario_id:task.scenario_id,price_kind:'checkout_payable',price_scope:'basket',currency:'CNY',
-                amount_fen:read.total,raw_value:read.raw,components:{delivery_fee:component(read.components.delivery),packaging_fee:component(read.components.packaging)},
-                missing_reasons:{...(!read.components.delivery?{delivery_fee:'not_verified'}:{}),...(!read.components.packaging?{packaging_fee:'not_verified'}:{})},
+                amount_fen:read.total,raw_value:read.raw,components:{delivery_fee:component(deliveryValue),packaging_fee:component(packagingValue)},
+                missing_reasons:{...(deliveryValue===null?{delivery_fee:'not_verified'}:{}),...(packagingValue===null?{packaging_fee:'not_verified'}:{})},
                 observed_at:read.evidence.captured_at,collected_at:new Date().toISOString(),value_origin:'observed',quote_valid:true,detail_complete:complete,
                 basket_items:[{product_id:frozen.target.id,name:item.name,variant:item.spec,quantity:1}],account_ref:task.account_ref,delivery_point_id:task.delivery_point_id,
                 entry_point:task.entry_point,evidence_refs:[read.evidence],contract_version:task.contract_version,collector_version:'android-0.4.0',
