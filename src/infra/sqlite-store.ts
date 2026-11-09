@@ -156,7 +156,8 @@ export class SqliteStore implements CollectionStore {
         }
       }
       const quarantine=result.cleanup==='quarantined';
-      const pause=quarantine || ['captcha_required','access_restricted','rate_limited','cart_not_owned'].includes(result.error_code ?? '');
+      // 购物车残留等业务态可自动恢复，不再暂停渠道；只有验证码/风控/隔离现场才需要人工介入。
+      const pause=quarantine || ['captcha_required','access_restricted','rate_limited'].includes(result.error_code ?? '');
       const retry=pause ? null : retryAt;
       this.db.prepare('UPDATE attempts SET result_json=? WHERE id=?').run(JSON.stringify(result),aid);
       this.db.prepare('UPDATE slots SET state=?,result_json=?,next_attempt_at=? WHERE id=?').run(retry ? 'queued' : 'completed',JSON.stringify(result),retry,task.slot_id);
