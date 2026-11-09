@@ -62,22 +62,30 @@ export class ModelGateway {
   }
   async locate(scope: string, image: Buffer, text: string, signal: AbortSignal, evidenceIds: string[] = []) {
     return this.call(scope,'page_location',digest([text,image.toString('base64')]),evidenceIds,async (cfg,report) => {
-      const { width, height } = await sharp(image).metadata();
+      // 全屏截图（1.9MB 级）会让本地 2B 视觉模型处理超时；先缩到 640 宽再定位，坐标按比例还原。
+      const source = await sharp(image).metadata();
+      const srcWidth = source.width ?? 0, srcHeight = source.height ?? 0;
+      const targetWidth = Math.min(640, srcWidth || 640);
+      const shrunk = srcWidth > targetWidth ? await sharp(image).resize({width:targetWidth}).png().toBuffer() : image;
+      const { width, height } = await sharp(shrunk).metadata();
+      const scaleX = width && srcWidth ? srcWidth / width : 1;
+      const scaleY = height && srcHeight ? srcHeight / height : 1;
       const frame = {
-        interfaceType:'android', size:async () => ({width,height}), actionSpace:() => [],
-        screenshotBase64:async () => 'data:image/png;base64,'+image.toString('base64')
+        interfaceType:'android', size:async () => ({width,height}), actionSpace: () => [],
+        screenshotBase64:async () => 'data:image/png;base64,'+shrunk.toString('base64')
       };
       const agent = new Agent(frame,{
         generateReport:false,persistExecutionDump:false,autoPrintReportMsg:false,
         modelConfig:{MIDSCENE_MODEL_BASE_URL:cfg.baseUrl,MIDSCENE_MODEL_API_KEY:cfg.key,
-          MIDSCENE_MODEL_NAME:cfg.model,MIDSCENE_MODEL_FAMILY:cfg.family,MIDSCENE_MODEL_TIMEOUT:20_000,MIDSCENE_MODEL_RETRY_COUNT:0,MIDSCENE_MODEL_STREAM_MODE:'non-stream'},
+          MIDSCENE_MODEL_NAME:cfg.model,MIDSCENE_MODEL_FAMILY:cfg.family,MIDSCENE_MODEL_TIMEOUT:45_000,MIDSCENE_MODEL_RETRY_COUNT:0,MIDSCENE_MODEL_STREAM_MODE:'non-stream'},
         onLLMUsage:info => report(info)
       });
       try {
         signal.throwIfAborted();
         const result = await agent.aiLocate('定位唯一可见的目标文字所在控件：'+text,{cacheable:false,deepLocate:false});
         signal.throwIfAborted();
-        return result.center;
+        const [cx, cy] = result.center;
+        return [cx * scaleX, cy * scaleY] as [number, number];
       } catch (cause) { throw new Error('model_location_failed',{cause}); }
       finally { await agent.destroy(); }
     });

@@ -51,6 +51,11 @@ export function readMeituanSettlement(nodes: U2Node[]): Partial<MeituanQuote> & 
     const value = valueNear(field);
     if (value) raw[field] = value;
   }
+  // 美团红包显示为“待使用 3元红包”这类复合文案，纯金额过滤会漏掉，单独扫描提取金额。
+  if (!raw['红包']) {
+    const couponRow = rows.find(r => /元红包|红包$/.test(r.label) && /\d/.test(r.label));
+    if (couponRow) raw['红包'] = couponRow.label;
+  }
   // 美团结算页底栏是“券前 ¥33.55 共减¥0.05”，金额和标签可能被拆成独立节点；
   // 券前价优先取“券前”标签附近的纯金额，读不到再退回页面上的“实付/合计”。
   const beforeRaw = raw['券前'] || '';
@@ -156,20 +161,34 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   step('搜索结果页门店卡（视觉兜底）');
   // 层级 1：语义精确门店卡（desc 通常带评分/配送费，长度明显更长）；
   // 层级 2：视觉定位。搜索联想词（如“麦当劳＆麦咖啡外卖点击可发起搜索”）不能用语义命中。
-  const storeCardExact = await semantic.find(
-    n => nodeLabel(n).includes(brand) && nodeLabel(n).includes('麦咖啡') && /分|评分|配送|起送|\d\.\d/.test(nodeLabel(n)),
-    6_000,
-  );
-  if (storeCardExact) {
-    await semantic.tap(storeCardExact, '门店卡(语义)');
-  } else if (options.visualLocate) {
-    const hit = await options.visualLocate(`${brand} 的门店卡片（带评分和配送费的那张卡片）`);
-    if (!hit) throw new Error('meituan_store_card_unlocated');
-    await options.tapPoint(hit.x, hit.y);
-    await sleep(1_800);
-  } else {
-    throw new Error('meituan_store_card_needs_visual');
+  // 点完必须校验确实进了门店页（出现“点菜/评价/商家”tab），否则返回重试，避免在结果页上继续往下走。
+  const isStorePage = async () => {
+    const ns = await semantic.waitStable(8);
+    const labels = ns.map(n => nodeLabel(n).trim());
+    return labels.some(l => l.startsWith('点菜')) && labels.some(l => l.startsWith('评价'));
+  };
+  let enteredStore = false;
+  for (let attempt = 0; attempt < 2 && !enteredStore; attempt++) {
+    const storeCardExact = await semantic.find(
+      n => nodeLabel(n).includes(brand) && nodeLabel(n).includes('麦咖啡') && /分|评分|配送|起送|\d\.\d/.test(nodeLabel(n)),
+      6_000,
+    );
+    if (storeCardExact) {
+      await semantic.tap(storeCardExact, '门店卡(语义)');
+    } else if (options.visualLocate) {
+      const hit = await options.visualLocate(`${brand} 的门店卡片（带评分和配送费的那张卡片）`);
+      if (hit) {
+        await options.tapPoint(hit.x, hit.y);
+        await sleep(1_800);
+      }
+    }
+    enteredStore = await isStorePage();
+    if (!enteredStore && attempt === 0) {
+      await semantic.back();
+      await semantic.waitStable(5);
+    }
   }
+  if (!enteredStore) throw new Error('meituan_store_card_unlocated');
 
   step('门店页搜索图标');
   // 美团门店页有两种容器：WMRestaurantActivity 的“搜索”可语义读取，MRNStandardActivity 读不到，需要视觉兜底。
@@ -204,16 +223,45 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   await semantic.tap(hot, `热门 ${itemName}`);
 
   step('单品');
-  // 搜索结果页顶部搜索框里也会出现商品名文本，取列表里最靠下的同名商品卡（列表在搜索框下方）。
+  // 搜索结果页顶部搜索框里也会出现商品名文本；从下往上逐个候选点击，点完校验是否出现“加入购物车”。
   const itemCandidates = await semantic.findAll(n => nodeLabel(n).trim() === itemName, 14_000);
-  const item = itemCandidates.length ? itemCandidates[itemCandidates.length - 1]! : null;
-  if (!item) throw new Error('meituan_no_item');
-  await semantic.tap(item, itemName);
+  if (!itemCandidates.length) throw new Error('meituan_no_item');
+  const inItemPage = async () => {
+    const ns = await semantic.waitStable(8);
+    // 商品详情页特征：有“加入购物车”或已加购后的“去结算”；只有顶部搜索框的同名文本不算。
+    const labels = ns.map(n => nodeLabel(n));
+    return labels.some(l => l.includes('加入购物车')) || labels.some(l => l.includes('去结算'));
+  };
+  let openedItem = false;
+  for (let i = itemCandidates.length - 1; i >= 0 && !openedItem; i--) {
+    await semantic.tap(itemCandidates[i]!, `${itemName}#${i}`);
+    openedItem = await inItemPage();
+    if (!openedItem) {
+      await semantic.back();
+      await semantic.waitStable(4);
+    }
+  }
+  // 层级 2：商品卡可点区域是图片/加号，文字节点点了无效时用视觉定位整张商品卡。
+  if (!openedItem && options.visualLocate) {
+    const hit = await options.visualLocate(`${itemName} 这张商品卡片的图片或右侧加号按钮`);
+    if (hit) {
+      await options.tapPoint(hit.x, hit.y);
+      await sleep(1_800);
+      openedItem = await inItemPage();
+    }
+  }
+  if (!openedItem) throw new Error('meituan_no_item');
 
   step('加入购物车');
-  const add = await semantic.find(n => nodeLabel(n).includes('加入购物车'), 12_000);
-  if (!add) throw new Error('meituan_no_add');
-  await semantic.tap(add, '加入购物车');
+  // 商品可能已在购物车里（详情页直接显示“去结算”），此时不再找“加入购物车”，视为已加购。
+  const add = await semantic.find(n => nodeLabel(n).includes('加入购物车'), 10_000);
+  if (add) {
+    await semantic.tap(add, '加入购物车');
+  } else {
+    const alreadyInCart = await semantic.find(n => nodeLabel(n).includes('去结算') || nodeLabel(n).includes('去支付'), 8_000);
+    if (!alreadyInCart) throw new Error('meituan_no_add');
+    console.log('[meituan] 商品已在购物车，跳过加购');
+  }
 
   step('去结算');
   const go = await semantic.find(n => nodeLabel(n).includes('去结算') || nodeLabel(n).includes('去支付'), 18_000);
