@@ -352,6 +352,7 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     await stage(emit,'brand_model_match',async()=>{
       // 搜索结果页的品牌卡与门店列表是 WebView 渲染，u2 读不到“查看该商家更多门店”，这里切 dump。
       await screen.device.setTreeMode?.('dump').catch(()=>undefined);
+      const device=await screen.device.size();
       const results=()=>waitFor(screen,signal,ns=>{
         if (!matchingQuery(ns)) return undefined;
         // 搜索结果页加载中只有搜索框和少量节点；等门店卡片真正渲染（排除顶部搜索框）再匹配。
@@ -361,7 +362,6 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
       });
       // searchEntry 可能是刚提交搜索、结果尚未渲染的页面；这里始终等结果卡片真正出现再匹配。
       let nodes=await results();
-      const device=await screen.device.size();
       const anchor=pilot.resultAnchor ? searchAnchor(nodes) : undefined;
       const header=anchor ? pilotStoreHeader(anchor,device) : undefined;
       if (anchor && !header) throw new CollectionError('jd_search_layout_changed','blocked');
