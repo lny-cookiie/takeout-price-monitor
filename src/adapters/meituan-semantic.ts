@@ -107,16 +107,18 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
       const ns = await waitStable(4);
-      // 白名单守卫：只要当前页不在美团主链路页面集合里（分享/问卷/支付/活动弹层…），立即返回重试。
+      // 正常路径优先：找到预期元素就直接返回，不做任何守卫判断（零额外开销、零误杀）。
+      const hit = ns.find(pred);
+      if (hit) return hit;
+      // 只有“找不到预期元素”时才检查页面是否已偏离主链路；偏离则返回加速恢复（否则会一直空等超时）。
       const guard = guardMainPath('meituan', ns.map(n => ({text: n.text, desc: n.desc})));
       if (!guard.ok) {
-        console.log(`[meituan] 页面不在主链路(${guard.kind})，立即返回`);
+        const sample = ns.map(n => nodeLabel(n)).filter(Boolean).slice(0, 6);
+        console.log(`[meituan] 找不到目标且页面不在主链路(${guard.kind})，立即返回`, JSON.stringify(sample));
         await options.back();
         await sleep(300);
         continue;
       }
-      const hit = ns.find(pred);
-      if (hit) return hit;
       await sleep(150);
     }
     return null;

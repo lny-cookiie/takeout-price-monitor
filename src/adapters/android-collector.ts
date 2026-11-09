@@ -87,7 +87,9 @@ export class ReviewedScreen {
           this.metrics.retries++;
         } else if (e.code!=='entry_mismatch') throw e;
       }
-      // 点错打开分享/排序/支付页：立即返回（守卫只做字符串匹配，300ms 级反应），避免在错误页面空等。
+      const scope=options.inCart ? this.cartNodes(nodes,false) : nodes;
+      if ((scope && keys.every(k=>!!this.selector(k,scope,false))) || (options.availability && this.unavailable(nodes))) return nodes;
+      // 只有“预期元素没出现”时才检查是否已偏离主链路；偏离则立即返回，避免在分享/问卷/支付页空等超时。
       if (nodes.length) {
         const guard = guardMainPath('jd', nodes.map(n => ({text: textOf(n)})));
         if (!guard.ok) {
@@ -96,8 +98,6 @@ export class ReviewedScreen {
           continue;
         }
       }
-      const scope=options.inCart ? this.cartNodes(nodes,false) : nodes;
-      if ((scope && keys.every(k=>!!this.selector(k,scope,false))) || (options.availability && this.unavailable(nodes))) return nodes;
       if (Date.now()>=until) throw new CollectionError('page_not_ready');
       await wait(250,undefined,{signal:this.signal});
       this.metrics.waitMs+=250;
