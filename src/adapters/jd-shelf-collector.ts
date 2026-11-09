@@ -346,6 +346,13 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
         await screen.device.tap(header.x,header.y);
         return {value:null,data:{query:input.brand,method:'reviewed_store_header',reusedSearch:!!searchEntry},evidenceIds:[proof.id]};
       }
+      // 搜索结果页可能先显示品牌聚合卡（只显示品牌名，没有门店名）；点“查看该商家更多门店”展开后才出现门店列表。
+      const moreEntry=nodes.find(node=>textOf(node).includes('查看该商家更多门店')&&node.bounds.width>0&&node.bounds.height>0);
+      if (moreEntry) {
+        await tapNode(screen,moreEntry,signal);
+        await wait(1_200,undefined,{signal});
+        nodes=await screen.nodes(true);
+      }
       // 只在结果里找配置门店全名：误点其他同名门店会在后续门店校验失败，不如明确报门店未找到。
       const fullKey=normalizeKey(pilot.name);
       const findCard=(list:UiNode[])=>list.filter(node=>{
@@ -741,6 +748,9 @@ async function selectDirectSingle(screen:ReviewedScreen,cal:JdShelfCalibration,s
     const name=row.snapshot.rawName;
     attempted.add(name);
     await tapNode(screen,row.card,signal);
+    // 商品详情弹窗是原生渲染，u2 能读且快；门店菜单页是 WebView，需要 dump。
+    await screen.device.setTreeMode?.('u2').catch(()=>undefined);
+    await wait(800,undefined,{signal});
     const read=await readSelectedSpec(screen,name,signal);
     const selection=read.selection;
     let evidence:Evidence|undefined;
@@ -750,6 +760,8 @@ async function selectDirectSingle(screen:ReviewedScreen,cal:JdShelfCalibration,s
     }
     if (screen.selector('dismissItemDetail',read.nodes,false)) await screen.tap('dismissItemDetail',read.nodes);
     else await screen.device.back();
+    // 退回门店菜单页（WebView），切回 dump。
+    await screen.device.setTreeMode?.('dump').catch(()=>undefined);
     if (selection && evidence) {
       const {spec}=selection, key=digest([store.key,normalize(name),'single',specKey(spec),'[]']);
       return {key,rawName:name,kind:'single',spec,sales:null,salesRaw:null,position:1,evidence,excludedReason:null,
