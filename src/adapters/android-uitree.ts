@@ -162,7 +162,7 @@ export class AndroidUiTreeReader {
     this.devicePixelRatio = options.devicePixelRatio ?? 1;
     this.pingTimeoutMs = options.pingTimeoutMs ?? 800;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 4000;
-    this.startTimeoutMs = options.startTimeoutMs ?? 10_000;
+    this.startTimeoutMs = options.startTimeoutMs ?? 15_000;
     this.onDiagnostic = options.onDiagnostic;
   }
 
@@ -222,14 +222,23 @@ export class AndroidUiTreeReader {
       await this.ensureForward();
       if (!(await this.ping())) {
         await this.ensureJar();
-        const command = `nohup sh -c 'CLASSPATH=${this.remoteJarPath} app_process / com.wetest.uia2.Main -p ${this.port}' >/dev/null 2>&1 &`;
-        await this.adb(['shell', command], 8000).catch(() => '');
-        const deadline = Date.now() + this.startTimeoutMs;
-        while (Date.now() < deadline) {
+        // EMUI 等系统在后台限制下偶尔会拉起失败，重试一次；仍失败则报错并附进程诊断。
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          const command = `nohup sh -c 'CLASSPATH=${this.remoteJarPath} app_process / com.wetest.uia2.Main -p ${this.port}' >/dev/null 2>&1 &`;
+          await this.adb(['shell', command], 8000).catch(() => '');
+          const deadline = Date.now() + this.startTimeoutMs;
+          while (Date.now() < deadline) {
+            if (await this.ping()) break;
+            await new Promise(resolveWait => setTimeout(resolveWait, 250));
+          }
           if (await this.ping()) break;
-          await new Promise(resolveWait => setTimeout(resolveWait, 250));
+          this.onDiagnostic?.({ event: 'start_retry', detail: `attempt_${attempt}` });
+          if (attempt === 2) {
+            const processes = await this.adb(['shell', 'ps', '-A'], 5000).catch(() => '');
+            const alive = /wetest/i.test(processes);
+            throw new Error(alive ? 'u2_server_process_alive_but_unreachable' : 'u2_server_not_ready');
+          }
         }
-        if (!(await this.ping())) throw new Error('u2_server_not_ready');
       }
       this.ready = true;
       this.onDiagnostic?.({ event: 'ready', ms: Date.now() - startedAt });
