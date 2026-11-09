@@ -39,8 +39,10 @@ export function readMeituanSettlement(nodes: U2Node[]): Partial<MeituanQuote> & 
   const valueNear = (label: string, tolerance = 40): string => {
     const hit = rows.find(r => r.label.includes(label));
     if (!hit) return '';
+    // 只看纯金额节点（¥33.55 / 26.5 这种），避免把“共减¥0.05”这类说明文字当成金额。
+    const isAmount = (text: string) => /^[¥￥]?\s*\d[\d.]*\s*元?$/.test(text.trim());
     const candidate = rows
-      .filter(r => Math.abs(r.y - hit.y) <= tolerance && r !== hit && /\d/.test(r.label))
+      .filter(r => Math.abs(r.y - hit.y) <= tolerance && r !== hit && isAmount(r.label))
       .sort((a, b) => Math.abs(a.y - hit.y) - Math.abs(b.y - hit.y))[0];
     return candidate ? candidate.label : '';
   };
@@ -49,13 +51,17 @@ export function readMeituanSettlement(nodes: U2Node[]): Partial<MeituanQuote> & 
     const value = valueNear(field);
     if (value) raw[field] = value;
   }
+  // 美团结算页底栏是“券前 ¥33.55 共减¥0.05”，金额和标签可能被拆成独立节点；
+  // 券前价优先取“券前”标签附近的纯金额，读不到再退回页面上的“实付/合计”。
+  const beforeRaw = raw['券前'] || '';
+  const couponBeforeFen = beforeRaw ? cny(beforeRaw) : null;
   return {
     raw,
     subtotal_fen: raw['商品原价'] ? cny(raw['商品原价']) : null,
     packaging_fen: raw['打包费'] ? cny(raw['打包费']) : null,
     delivery_fen: raw['用户配送费'] ? cny(raw['用户配送费']) : null,
     discount_fen: raw['红包'] ? cny(raw['红包']) : raw['立减'] ? cny(raw['立减']) : null,
-    coupon_before_fen: raw['券前'] ? cny(raw['券前']) : null,
+    coupon_before_fen: couponBeforeFen,
     payable_fen: raw['实付'] ? cny(raw['实付']) : raw['合计'] ? cny(raw['合计']) : null,
   };
 }
@@ -74,6 +80,12 @@ export interface MeituanFlowOptions {
   visualLocate?: (hint: string) => Promise<{ x: number; y: number } | null>;
   /** 点视觉兜底给出的坐标（逻辑坐标） */
   tapPoint: (x: number, y: number) => Promise<void>;
+  /** 被退到桌面时重新打开美团（对应 device.launch()，不清数据） */
+  reopenApp?: () => Promise<void>;
+  /** 在搜索页用键盘输入并提交关键词（Midscene device.search，已验证支持中文） */
+  searchText?: (text: string) => Promise<void>;
+  /** 商品结果区的最小 y（物理像素），用于排除顶部搜索框里的同名文本；默认 200 */
+  minItemTop?: number;
   sleep: (ms: number) => Promise<void>;
   brand: string;
   itemName: string;
@@ -90,13 +102,26 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     steps.push(name);
     console.log(`[meituan] step ${steps.length}: ${name}`);
   };
+  // 首页特征：用最稳的两个标志——美团自营“小象超市”入口 + 顶部“搜索”按钮。
+  // 不依赖“团购/推荐”这类会随滚动、活动位、文案改版而消失的节点。
   const isHome = async () => {
     const nodes = await semantic.read();
-    return nodes.some(n => nodeLabel(n).trim() === '外卖') && nodes.some(n => nodeLabel(n).trim() === '团购');
+    const labels = nodes.map(n => nodeLabel(n).trim());
+    const has = (needle: string) => labels.some(l => l.includes(needle));
+    const ok = has('小象超市') && has('搜索');
+    if (!ok) console.log('[meituan] isHome=false', JSON.stringify({小象超市:has('小象超市'),搜索:has('搜索'),sample:labels.slice(0,8)}));
+    return ok;
   };
-  // 回首页（点错/不在首页时用返回重试，不重启 App）
-  for (let i = 0; i < 4 && !(await isHome()); i++) {
-    await options.semantic.back?.();
+  // 回首页：先在 App 内返回重试；若已被退到桌面（读不到美团任何节点），重新打开 App（不 force-stop、不清数据）。
+  for (let i = 0; i < 5 && !(await isHome()); i++) {
+    await semantic.back();
+    await semantic.waitStable(4);
+  }
+  if (!(await isHome())) {
+    const probe = await semantic.read();
+    const inApp = probe.some(n => nodeLabel(n).includes('美团') || nodeLabel(n).includes('外卖'));
+    if (!inApp && options.reopenApp) await options.reopenApp();
+    await semantic.waitStable(6);
   }
   if (!(await isHome())) throw new Error('meituan_not_home');
 
@@ -106,15 +131,39 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   await semantic.tap(search, '搜索按钮');
 
   step('搜索页历史词');
-  const history = await semantic.find(n => nodeLabel(n).trim() === brand || nodeLabel(n).includes(brand));
-  if (history) await semantic.tap(history, `历史 ${brand}`);
+  // 层级 1：键盘输入品牌名（device.search，中文已验证可用，不依赖历史记录）；
+  // 层级 2：精确匹配历史词；层级 3：包含匹配。
+  const inResultPage = async () => {
+    const ns = await semantic.waitStable(6);
+    return ns.some(n => nodeLabel(n).includes('综合排序') || nodeLabel(n).includes('全部'));
+  };
+  let searched = false;
+  if (options.searchText) {
+    try {
+      await options.searchText(brand);
+      searched = await inResultPage();
+    } catch {
+      searched = false;
+    }
+  }
+  if (!searched) {
+    const exactHistory = await semantic.find(n => nodeLabel(n).trim() === brand, 6_000);
+    const history = exactHistory ?? (await semantic.find(n => nodeLabel(n).includes(brand), 6_000));
+    if (!history) throw new Error('meituan_no_search_entry');
+    await semantic.tap(history, `历史 ${brand}`);
+  }
 
   step('搜索结果页门店卡（视觉兜底）');
-  const storeCard = await semantic.find(n => nodeLabel(n).includes('麦咖啡') && nodeLabel(n).includes(brand), 8_000);
-  if (storeCard) {
-    await semantic.tap(storeCard, '门店卡');
+  // 层级 1：语义精确门店卡（desc 通常带评分/配送费，长度明显更长）；
+  // 层级 2：视觉定位。搜索联想词（如“麦当劳＆麦咖啡外卖点击可发起搜索”）不能用语义命中。
+  const storeCardExact = await semantic.find(
+    n => nodeLabel(n).includes(brand) && nodeLabel(n).includes('麦咖啡') && /分|评分|配送|起送|\d\.\d/.test(nodeLabel(n)),
+    6_000,
+  );
+  if (storeCardExact) {
+    await semantic.tap(storeCardExact, '门店卡(语义)');
   } else if (options.visualLocate) {
-    const hit = await options.visualLocate(`${brand} 的门店卡片`);
+    const hit = await options.visualLocate(`${brand} 的门店卡片（带评分和配送费的那张卡片）`);
     if (!hit) throw new Error('meituan_store_card_unlocated');
     await options.tapPoint(hit.x, hit.y);
     await sleep(1_800);
@@ -123,9 +172,31 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   }
 
   step('门店页搜索图标');
-  const shopSearch = await semantic.find(n => nodeLabel(n).trim() === '搜索', 12_000);
-  if (!shopSearch) throw new Error('meituan_no_shop_search');
-  await semantic.tap(shopSearch, '门店搜索');
+  // 美团门店页有两种容器：WMRestaurantActivity 的“搜索”可语义读取，MRNStandardActivity 读不到，需要视觉兜底。
+  // 点击后必须进入店内搜索页（出现“请输入商品名”或“热门搜索”）；否则返回重试，避免点成分享/收藏后一路错下去。
+  const inShopSearch = async () => {
+    const ns = await semantic.waitStable(6);
+    return ns.some(n => nodeLabel(n).includes('请输入商品') || nodeLabel(n).includes('热门搜索'));
+  };
+  let enteredShopSearch = false;
+  for (let attempt = 0; attempt < 2 && !enteredShopSearch; attempt++) {
+    const shopSearch = await semantic.find(n => nodeLabel(n).trim() === '搜索', 6_000);
+    if (shopSearch) {
+      await semantic.tap(shopSearch, '门店搜索');
+    } else if (options.visualLocate) {
+      const hit = await options.visualLocate('门店页顶部工具栏里的放大镜搜索按钮（在返回箭头右侧）');
+      if (hit) {
+        await options.tapPoint(hit.x, hit.y);
+        await sleep(1_800);
+      }
+    }
+    enteredShopSearch = await inShopSearch();
+    if (!enteredShopSearch) {
+      await semantic.back();
+      await semantic.waitStable(4);
+    }
+  }
+  if (!enteredShopSearch) throw new Error('meituan_no_shop_search');
 
   step('店内搜索热门词');
   const hot = await semantic.find(n => nodeLabel(n).trim() === itemName, 12_000);
@@ -133,7 +204,9 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   await semantic.tap(hot, `热门 ${itemName}`);
 
   step('单品');
-  const item = await semantic.find(n => nodeLabel(n).trim() === itemName, 14_000);
+  // 搜索结果页顶部搜索框里也会出现商品名文本，取列表里最靠下的同名商品卡（列表在搜索框下方）。
+  const itemCandidates = await semantic.findAll(n => nodeLabel(n).trim() === itemName, 14_000);
+  const item = itemCandidates.length ? itemCandidates[itemCandidates.length - 1]! : null;
   if (!item) throw new Error('meituan_no_item');
   await semantic.tap(item, itemName);
 

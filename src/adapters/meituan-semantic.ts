@@ -18,6 +18,8 @@ export interface U2Node {
 export interface U2Semantic {
   read(): Promise<U2Node[]>;
   find(pred: (n: U2Node) => boolean, timeoutMs?: number): Promise<U2Node | null>;
+  /** 找所有匹配节点（按纵向从上到下排序），用于“排除顶部搜索框、选列表里的商品卡”这类场景 */
+  findAll(pred: (n: U2Node) => boolean, timeoutMs?: number): Promise<U2Node[]>;
   tap(node: U2Node, label: string): Promise<void>;
   waitStable(rounds?: number): Promise<U2Node[]>;
   back(): Promise<void>;
@@ -110,6 +112,17 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
     return null;
   };
 
+  const findAll = async (pred: (n: U2Node) => boolean, timeoutMs = 20_000): Promise<U2Node[]> => {
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+      const ns = await waitStable();
+      const hits = ns.filter(pred).sort((a, b) => a.top - b.top);
+      if (hits.length) return hits;
+      await sleep(450);
+    }
+    return [];
+  };
+
   const tap = async (node: U2Node, label: string): Promise<void> => {
     physical ??= await options.physicalSize();
     const logical = await options.logicalSize();
@@ -137,6 +150,7 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
   return {
     read,
     find,
+    findAll,
     tap,
     waitStable,
     back: options.back,
