@@ -15,7 +15,7 @@ export interface JdShelfCalibration {
   itemKind?: ShelfField; itemSpec?: ShelfField; itemOptions?: ShelfField; itemId?: ShelfField; sales?: ShelfField;
   end?: ShelfLocator; salesOrder?: ShelfLocator;
   brandAliases?: {brand:string; aliases:string[]}[];
-  pilot?: {storeId:string; name:string; address:string; reference:string; queryResource:string; resultLabel:string; resultAnchor?:string; singleName:string; singleSpec:string;
+  pilot?: {storeId:string; name:string; address:string; reference:string; queryResource:string; resultLabel:string; resultAnchor?:string; singleName:string; singleSpec:string; storeQuery?:string;
     autoSingles?:boolean; directSingle?:boolean; singles?: {name:string; spec:string; options?:string[]}[]};
 }
 export interface AndroidSource {
@@ -47,7 +47,7 @@ const jdShelfSchema = object({
   reviewedStores:array(object({id:string(80),brand:string(100),name:string(150),city:string(80),district:string(80),address:string(250),reference:string(200)}),30),
   brandAliases:array(object({brand:string(100),aliases:array(string(100),15,1)}),30),
   pilot:object({storeId:{type:'string',pattern:'^[a-f0-9]{64}$'},name:string(160),address:string(250),reference:string(250),
-    queryResource:string(200),resultLabel:string(150),resultAnchor:string(150),singleName:string(100),singleSpec:string(100),autoSingles:boolean,directSingle:boolean,
+    queryResource:string(200),resultLabel:string(150),resultAnchor:string(150),singleName:string(100),singleSpec:string(100),storeQuery:string(120),autoSingles:boolean,directSingle:boolean,
     singles:array(object({name:string(100),spec:string(100),options:array(string(100),20)}),20,1)},
     ['storeId','name','address','reference','queryResource','resultLabel','singleName','singleSpec'])
 },['searchResults','resultCard','resultName','identity','storeName','city','address','menu','itemCard','itemName']);

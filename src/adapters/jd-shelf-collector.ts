@@ -183,8 +183,12 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     return candidates.length===1?candidates[0]:undefined;
   };
   if (pilot && pilot.storeId!==input.savedStoreId) throw new CollectionError('jd_pilot_store_scope','blocked');
-  const matchingQuery=(nodes:UiNode[])=>!!pilot && nodes.some(n=>resourceOf(n)===pilot.queryResource && textOf(n)===input.brand) &&
-    !!oneAnchor(cal.searchResults,nodes);
+  // 搜索框只认品牌名（门店名会搜出错误结果），门店关键词用于模糊匹配展开列表里被截断的店名。
+  const storeSearchQuery=pilot?.storeQuery ?? input.brand;
+  const nameBracket=pilot ? /[（(]([^）)]+)[）)]/.exec(pilot.name)?.[1] : undefined;
+  const storeKeyword=nameBracket ? normalizeKey(nameBracket).replace(/^天津/,'').slice(0,2) : undefined;
+  // 门店级搜索可能直接落在门店页（ChannelSearchActivity），不一定有结果列表容器；只要搜索框内容匹配即可。
+  const matchingQuery=(nodes:UiNode[])=>!!pilot && nodes.some(n=>resourceOf(n)===pilot.queryResource && normalizeKey(textOf(n)).includes(normalizeKey(storeSearchQuery)));
   const merchant={text:'商家，未选中',className:'TextView'};
   function merchantTab(ns:UiNode[],size:{width:number;height:number}) {
     const tab=screen.find(merchant,ns,false);
@@ -195,12 +199,13 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     return x>=.47 && x<=.55 && y>=.11 && y<=.16 && height>=size.height*.035 ? tab : undefined;
   }
   function pilotIdentity(ns:UiNode[]) {
-    // 页面文本可能带零宽空格或全角符号，门店名/地址用规范化包含匹配，避免精确匹配失败。
-    const name=ns.find(node=>normalizeKey(textOf(node)).includes(normalizeKey(pilot!.name)));
-    const address=ns.find(node=>normalizeKey(textOf(node)).includes(normalizeKey(pilot!.address)));
+    // 用户确认同城门店价差很小，允许搜到品牌下的任意门店；门店名必读，地址读到就记录、读不到不阻断。
+    const brand=normalizeKey(input.brand);
+    const name=ns.find(node=>normalizeKey(textOf(node)).includes(brand));
+    if (!name) return undefined;
+    const address=ns.find(node=>/天津市|地址/.test(textOf(node))) ?? name;
     const menu=screen.find({text:'外卖，未选中',className:'TextView'},ns,false);
-    // 点“商家”后可能进入独立商家页，菜单页的“外卖，未选中”tab 不保证存在；门店名+地址已足够确认身份。
-    return name && address ? {name,address,menu} : undefined;
+    return {name,address,menu};
   }
   function pilotMenuIdentity(ns:UiNode[]) {
     const name=ns.find(node=>normalizeKey(textOf(node)).includes(normalizeKey(pilot!.name)));
@@ -218,6 +223,17 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     return stage(emit,'store_verify',async()=>{
       // 门店页是小程序 WebView，u2 即时快照读不到内部节点；进入门店后切回 dump 通道。
       await screen.device.setTreeMode?.('dump').catch(()=>undefined);
+      // 进店后常弹出优惠券/活动浮层挡住门店名与地址，先识别并关闭再核对身份。
+      await wait(1_500,undefined,{signal});
+      const probe=await screen.nodes().catch(()=>[] as UiNode[]);
+      if (probe.some(node=>/好运券|去使用|满\d+可用/.test(textOf(node)))) {
+        // 不能用返回键：会连门店页一起退掉。优先点“关闭”节点，找不到则点弹窗外顶部空白。
+        const viewport=await screen.device.size();
+        const close=probe.find(node=>/关闭|^[×✕]$/.test(textOf(node)) || (node.attrs['content-desc'] ?? '').includes('关闭'));
+        if (close) await tapNode(screen,close,signal);
+        else await screen.device.tap(viewport.width*.5,viewport.height*.08);
+        await wait(900,undefined,{signal});
+      }
       let found=visible;
       if (!found) {
         const size=await screen.device.size();
@@ -242,8 +258,8 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
           return pilotIdentity(ns);
         });
       }
-      const store={key:digest(['jd',pilot!.name,pilot!.address]),brand:input.brand,name:textOf(found.name),city:input.city,address:textOf(found.address)};
-      if (!matchesJdStore(input,store,input.district)) throw new CollectionError('store_identity_mismatch','blocked');
+      // 用户确认同城门店价差很小：允许搜到品牌下任意门店，记录实际门店名与地址，不再按配置门店阻断。
+      const store={key:digest(['jd',textOf(found.name),textOf(found.address)]),brand:input.brand,name:textOf(found.name),city:input.city,address:textOf(found.address)};
       const identityNodes=[found.name,found.address];
       const proof=await screen.capture(identityNodes);
       const evidence=await evidenceStore.save(randomUUID(),'store',proof.image,JSON.stringify({store,reference:pilot!.reference}),'live',proof.at);
@@ -307,9 +323,9 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     await screen.tap('search',await screen.waitFor(['search'],{timeoutMs:8_000}));
     const inputNodes=await screen.waitFor(['searchInput']);
     await screen.tap('searchInput',inputNodes);
-    await screen.device.search(input.brand,signal,!src.searchSubmit);
+    await screen.device.search(storeSearchQuery,signal,!src.searchSubmit);
     if (src.searchSubmit && src.searchValue) {
-      const value={...src.searchValue,text:input.brand};
+      const value={...src.searchValue,text:storeSearchQuery};
       const typed=await waitFor(screen,signal,ns=>screen.find(value,ns,false) && screen.selector('searchSubmit',ns,false) ? ns : undefined);
       await screen.tap('searchSubmit',typed);
     }
@@ -323,6 +339,8 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
   });
   if (pilot) {
     await stage(emit,'brand_model_match',async()=>{
+      // 搜索结果页的品牌卡与门店列表是 WebView 渲染，u2 读不到“查看该商家更多门店”，这里切 dump。
+      await screen.device.setTreeMode?.('dump').catch(()=>undefined);
       const results=()=>waitFor(screen,signal,ns=>{
         if (!matchingQuery(ns)) return undefined;
         // 结果容器刚出现时卡片还在渲染，先等卡片真正出现再做模型定位，避免在加载空白页上定位失败。
@@ -353,11 +371,12 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
         await wait(1_200,undefined,{signal});
         nodes=await screen.nodes(true);
       }
-      // 只在结果里找配置门店全名：误点其他同名门店会在后续门店校验失败，不如明确报门店未找到。
+      // 同城门店价差很小（用户确认），搜索结果页点品牌对应的任意门店即可，不再要求精确店名。
       const fullKey=normalizeKey(pilot.name);
+      const fuzzyKey=normalizeKey(input.brand);
       const findCard=(list:UiNode[])=>list.filter(node=>{
         const label=normalizeKey(textOf(node));
-        return label.length>=4 && label.includes(fullKey) && node.bounds.width>0 && node.bounds.height>0;
+        return label.length>=2 && label.includes(fuzzyKey) && node.bounds.width>0 && node.bounds.height>0;
       }).sort((a,b)=>b.bounds.top-a.bounds.top)[0];
       let textNode=findCard(nodes);
       if (!textNode) {
