@@ -762,8 +762,14 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             stepStart('restore');
             const restoreStarted=Date.now();
             try {
-              const emptyProof=await restore(inCheckout);
-              stepEnd({state:'succeeded',data:{cleanup},evidenceIds:emptyProof?[emptyProof.id]:[]});
+              if (cleanup==='untouched' && inCheckout) {
+                // 立即购买不修改购物车；退一步离开结算页即可，省掉约 20 秒清空与回菜单流程。
+                await screen.device.back();
+                await wait(500,undefined,{signal});
+              } else {
+                const emptyProof=await restore(inCheckout);
+                stepEnd({state:'succeeded',data:{cleanup},evidenceIds:emptyProof?[emptyProof.id]:[]});
+              }
             } catch (error) {
               stepEnd({state:'failed',errorCode:'cleanup_failed',data:{cleanup,reason:error instanceof CollectionError ? error.code : null}});
               note('cleanup','购物车状态需人工核对，已暂停对应设备及账号。');
