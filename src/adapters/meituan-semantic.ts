@@ -20,6 +20,8 @@ export interface U2Semantic {
   find(pred: (n: U2Node) => boolean, timeoutMs?: number): Promise<U2Node | null>;
   tap(node: U2Node, label: string): Promise<void>;
   waitStable(rounds?: number): Promise<U2Node[]>;
+  back(): Promise<void>;
+  tapByVisual(hint: string): Promise<boolean>;
 }
 
 export const nodeLabel = (n: U2Node) => `${n.text} ${n.desc}`.trim();
@@ -137,5 +139,7 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
     find,
     tap,
     waitStable,
+    back: options.back,
+    tapByVisual,
   };
 }
