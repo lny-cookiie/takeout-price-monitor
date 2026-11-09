@@ -10,6 +10,7 @@ import type { EvidenceStore } from '../infra/evidence.js';
 import type { ModelGateway } from '../infra/model.js';
 import { cropBoxes, flatten, resourceOf, textOf } from './android-page.js';
 import { captureCheckout, verifyCheckout, compactEvidence } from './checkout-reading.js';
+import { privacyBandMask } from './checkout-privacy.js';
 import {PAGE_ONTOLOGY_VERSION,mapVersion,executionPages} from '../domain/page-ontology.js';
 export { resourceOf, textOf } from './android-page.js';
 
@@ -212,7 +213,14 @@ export class ReviewedScreen {
       if (missed && attempt===0) { await wait(200,undefined,{signal}); continue; }
       if (!locations.length) throw new CollectionError('evidence_capture_failed');
       if (missed) throw new CollectionError('page_changed_during_capture');
-      if(options?.privacyTopRatio){const privateHeight=Math.ceil(height*options.privacyTopRatio);masks.push({input:await sharp({create:{width,height:privateHeight,channels:3,background:'#121719'}}).png().toBuffer(),left:0,top:0});}
+      if(options?.privacyTopRatio){
+        // 优先按配送点位锚点计算顶部遮罩带（跟随内容位置），找不到锚点时回退固定比例（跨机型 P0-4）。
+        let pointNode:UiNode|null=null;
+        try{pointNode=this.source.selectors.point ? this.selector('point',refreshed,false) : null;}catch{pointNode=null;}
+        const band=pointNode ? privacyBandMask(pointNode.bounds,viewport,{width,height}) : null;
+        if(band)masks.push({input:await sharp({create:{width:band.width,height:band.height,channels:3,background:'#121719'}}).png().toBuffer(),left:band.left,top:band.top});
+        else{const privateHeight=Math.ceil(height*options.privacyTopRatio);masks.push({input:await sharp({create:{width,height:privateHeight,channels:3,background:'#121719'}}).png().toBuffer(),left:0,top:0});}
+      }
       const image = await sharp({create:{width,height,channels:3,background:'#121719'}}).composite([...layers,...masks]).png().toBuffer();
       return {image,locations,at};
     }
