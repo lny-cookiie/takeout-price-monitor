@@ -300,7 +300,8 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     return {value:await screen.waitFor(['home',src.homePoint ? 'homePoint' : 'point'],{onLaunch:true}),data:{reusedHome:!!(homeEntry||categoryEntry),entryActions:actions}};
   });
   const candidates=searchEntry ? [] : await stage(emit,'brand_search',async()=>{
-    await screen.tap('search',initial);
+    // 首页/频道页切换瞬间搜索框可能还没渲染，先等控件出现再点，避免 control_missing。
+    await screen.tap('search',await screen.waitFor(['search'],{timeoutMs:8_000}));
     const inputNodes=await screen.waitFor(['searchInput']);
     await screen.tap('searchInput',inputNodes);
     await screen.device.search(input.brand,signal,!src.searchSubmit);
@@ -343,20 +344,36 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
         return {value:null,data:{query:input.brand,method:'reviewed_store_header',reusedSearch:!!searchEntry},evidenceIds:[proof.id]};
       }
       // 搜索结果页是原生页面，u2 能直接读到门店卡片；优先用控件树匹配，替代慢且易失败的模型定位。
-      const storeKeys=['麦当劳',pilot.name].map(normalizeKey).filter(key=>key.length>=3);
+      // 门店名节点可能只渲染截断文本（例如“麦当劳”），长度阈值取 2；多个命中时取更靠下的结果卡片。
+      const storeKeys=['麦当劳',pilot.name].map(normalizeKey).filter(key=>key.length>=2);
       const treeCandidates=nodes.filter(node=>{
         const label=normalizeKey(textOf(node));
-        if (label.length<4) return false;
+        if (label.length<2) return false;
         if (!storeKeys.some(key=>label.includes(key))) return false;
-        return node.bounds.width>0 && node.bounds.height>0 && node.bounds.top>device.height*.05;
-      }).sort((a,b)=>a.bounds.top-b.bounds.top);
+        return node.bounds.width>0 && node.bounds.height>0;
+      }).sort((a,b)=>b.bounds.top-a.bounds.top);
+      if (!treeCandidates.length) {
+        // 诊断：树匹配为空时记录页面文本样本，便于区分页面未就绪与文本格式问题。
+        const hits=nodes.filter(node=>normalizeKey(textOf(node)).includes('麦当劳')).slice(0,6).map(node=>({text:textOf(node).slice(0,20),top:Math.round(node.bounds.top),h:Math.round(node.bounds.height)}));
+        emit?.({phase:'brand_model_match',state:'started',data:{treeMatch:0,hits,total:nodes.length}});
+      }
       if (treeCandidates.length) {
-        const target=treeCandidates[0]!;
-        const frame=await screen.capture([target]);
-        const treeProof=await evidenceStore.save(randomUUID(),'jd_search',frame.image,textOf(target),'live',frame.at);
+        const textNode=treeCandidates[0]!;
+        // 文本节点可能是顶部品牌栏或结果卡片标题；找包含它的可点击容器（真卡片）再点，避免点文字不跳转。
+        const cx=textNode.bounds.left+textNode.bounds.width/2, cy=textNode.bounds.top+textNode.bounds.height/2;
+        const containers=nodes.filter(node=>
+          node.attrs.clickable==='true' &&
+          node.bounds.width>device.width*.5 && node.bounds.height>40 &&
+          node.bounds.left<=cx && cx<=node.bounds.left+node.bounds.width &&
+          node.bounds.top<=cy && cy<=node.bounds.top+node.bounds.height
+        ).sort((a,b)=>b.bounds.top-a.bounds.top);
+        const target=containers[0]??textNode;
+        // 树匹配后直接截整屏作为证据，不再走 capture 的「重读屏对齐节点」，避免页面刷新导致对齐失败。
+        const frame=await screen.device.screenshot(signal);
+        const treeProof=await evidenceStore.save(randomUUID(),'jd_search',frame,textOf(target),'live');
         signal.throwIfAborted();
         await tapNode(screen,target,signal);
-        return {value:null,data:{query:input.brand,method:'tree_store_match'},evidenceIds:[treeProof.id]};
+        return {value:null,data:{query:input.brand,method:'tree_store_match',targetTop:Math.round(target.bounds.top),container:target!==textNode},evidenceIds:[treeProof.id]};
       }
       // 容器裁剪在 u2 读屏下会改变模型输入区域，先回退到基线固定比例，等真机验收后再启用（P0-2）。
       const top=Math.round(height*.17);
