@@ -78,7 +78,7 @@ export class ReviewedScreen {
     for (;;) {
       this.signal.throwIfAborted();
       let nodes: UiNode[] = [];
-      try { nodes=await this.nodes(true); }
+      try { nodes=await this.nodes(); }
       catch(e) {
         if (!(e instanceof CollectionError)) throw e;
         if (e.code==='screen_unreadable' && options.onLaunch && !launchReadRetried && Date.now()<until) {
