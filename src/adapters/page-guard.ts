@@ -29,8 +29,22 @@ export function isPaymentPage(nodes: GuardNode[]): boolean {
   return labels.some(l => /确认支付|立即支付|付款金额|支付方式|请输入支付密码/.test(l));
 }
 
+/** 是否是满意度调研/问卷页（淘宝搜索后弹出的反馈问卷，非主链路页面）。 */
+export function isSurveyPage(nodes: GuardNode[]): boolean {
+  const labels = nodes.map(label);
+  const markers = ['满意度调研', '感谢您反馈', '填写问卷', '问卷填写', '获取50个淘金币', '非常不满意'];
+  return markers.filter(k => labels.some(l => l.includes(k))).length >= 2;
+}
+
+/** 是否是调查/评价邀请等中断式弹层（领券、评价、广告弹窗）。 */
+export function isInterruptPopup(nodes: GuardNode[]): boolean {
+  const labels = nodes.map(label);
+  const markers = ['立即领取', '去评价', '评价一下', '广告', '稍后再说', '暂不升级'];
+  return markers.filter(k => labels.some(l => l.includes(k))).length >= 2;
+}
+
 export interface GuardResult {
-  kind: 'share' | 'sort' | 'payment' | null;
+  kind: 'share' | 'sort' | 'payment' | 'survey' | 'popup' | null;
   shouldBack: boolean;
 }
 
@@ -39,5 +53,7 @@ export function guardPage(nodes: GuardNode[]): GuardResult {
   if (isPaymentPage(nodes)) return {kind: 'payment', shouldBack: true};
   if (isSharePage(nodes)) return {kind: 'share', shouldBack: true};
   if (isSortDropdown(nodes)) return {kind: 'sort', shouldBack: true};
+  if (isSurveyPage(nodes)) return {kind: 'survey', shouldBack: true};
+  if (isInterruptPopup(nodes)) return {kind: 'popup', shouldBack: true};
   return {kind: null, shouldBack: false};
 }
