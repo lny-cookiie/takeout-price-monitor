@@ -401,20 +401,16 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           await screen.tap('item',nodes);
         }
         note('variant','核对商品规格、口味和套餐组成。');
-        // 商品详情弹窗是原生渲染，u2 能读规格；dump 在详情页会整次超时。
-        await screen.device.setTreeMode?.('u2').catch(()=>undefined);
+        // 商品详情弹窗是原生渲染，u2 能读规格；dump 在详情页会整次超时。切不到 u2 就明确失败，不静默回落。
+        await screen.device.setTreeMode?.('u2');
         try{nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,...(task.specified?{timeoutMs:6_000}:{})});}
         catch(error){
           const current=await screen.nodes();
           if(!task.specified||!jd||!(error instanceof CollectionError&&error.code==='page_not_ready')||!source.selectors.itemDetail||
             !screen.selector('itemDetail',current,false)||!screen.selector('add',current,false))throw error;
-          emit?.({phase:'item_open_retry',state:'started',data:{reason:'已识别指定商品详情，但规格文字为空；未加购'}});
-          if(source.selectors.dismissItemDetail&&screen.selector('dismissItemDetail',current,false))await screen.tap('dismissItemDetail',current);else await device.back();
-          const returned=await screen.nodes();
-          if(screen.currentStoreTitle!==store.name||!screen.selector('cartEmpty',returned,false))throw new CollectionError('store_identity_changed','blocked');
-          await jd.findJdMenuItem(screen,store,item,signal);
-          try{nodes=await screen.waitFor(source.selectors.spec?['spec']:['selectedSpec'],{availability:true,timeoutMs:8_000});emit?.({phase:'item_open_retry',state:'succeeded'});}
-          catch{emit?.({phase:'item_open_retry',state:'failed',errorCode:'variant_text_unavailable'});throw new CollectionError('variant_text_unavailable');}
+          // 详情页已打开且有“加入购物车”：规格面板默认不展开，u2 树里读不到“已选”不影响加购，直接继续（规格以结算页为准）。
+          emit?.({phase:'item_open_retry',state:'succeeded',data:{reason:'规格面板未展开，直接加购'}});
+          nodes=current;
         }
         await unavailability(nodes);
         if (source.selectors.spec) {

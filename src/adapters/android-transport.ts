@@ -120,7 +120,10 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
   const setTreeMode = async (mode: 'u2' | 'dump'): Promise<void> => {
     if (mode === treeMode) return;
     if (mode === 'u2') {
-      if (!(await ensureU2())) return;
+      const reader = await ensureU2();
+      if (!reader) throw new CollectionError('u2_unavailable','blocked');
+      // 切换后先预热一次读取：服务起不来就明确报错，不能静默回落 dump（详情页 dump 会整次超时）。
+      await reader.read();
     } else {
       await stopU2();
     }
