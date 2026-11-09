@@ -672,7 +672,12 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
               const component=(value:{fen:number;raw:string}|null):MoneyComponent=>value?{amount_fen:value.fen,raw_value:value.raw,basis:'separately_displayed',included_in:'checkout_payable'}:
                 {amount_fen:null,raw_value:null,basis:'unknown',included_in:null};
               // 门店页底部的“运费”与打包费在京东外卖合并展示；结算页没有独立行时用门店页读到的运费补上。
-              const freightFallback=storeFreightFen!==null?{fen:storeFreightFen,raw:(storeFreightFen/100).toFixed(2)}:null;
+              // 门店页/结算页都没显示运费时（部分门店免运费或页面未展示），按“应付-(商品金额-优惠)”倒推，标注为推算值。
+              const inferredFreight=(storeFreightFen===null&&read.total!==null&&read.components.subtotal)
+                ?Math.max(0,read.total-(read.components.subtotal.fen-(read.components.discount?.fen??0)))
+                :null;
+              const freightFallback=storeFreightFen!==null?{fen:storeFreightFen,raw:(storeFreightFen/100).toFixed(2)}
+                :(inferredFreight!==null?{fen:inferredFreight,raw:(inferredFreight/100).toFixed(2)}:null);
               const deliveryValue=read.components.delivery??freightFallback;
               const packagingValue=read.components.packaging??freightFallback;
               const complete=deliveryValue!==null&&packagingValue!==null;
