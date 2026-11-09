@@ -314,8 +314,11 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         // 采集从首页/外卖频道等原生页面开始，用 u2 即时快照；读到 WebView 页面会自动回落到 dump。
         await device.setTreeMode?.('u2').catch(()=>undefined);
         // 手机可能停在门店页/详情页/结算页，复用这些状态会让后续步骤错乱；每次采集强制重启到首页。
+        // 连续高频运行时京东可能被系统弹窗/后台清理顶掉，启动后确认前台，必要时再启动一次。
         await device.launch(true);
-        await wait(1_200,undefined,{signal});
+        await wait(2_000,undefined,{signal});
+        try { await device.getUITree(); }
+        catch { await device.launch(true); await wait(2_000,undefined,{signal}); }
         stepEnd();
         const query=task.jdOrigin?.brand ?? (source.searchBy==='brand' ? store.brand : store.name);
         const vars = {query,store:store.name,address:store.address,item:item.name,spec:item.spec,quantity:'1',
