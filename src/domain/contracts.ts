@@ -145,11 +145,12 @@ export function checkObservation(task: Task, o: Observation): void {
 }
 export function checkResult(task: Task, r: AttemptResult): void {
   if(r.resolvedLive) {
+    // 用户确认同城门店价差很小：允许采集到品牌下任意门店，只校验商品与任务一致，不再按配置门店阻断。
     if(!task.specified || !task.live || !task.jdOrigin || r.resolvedLive.target.id!==task.live.target.id || r.resolvedLive.quantity!==1 ||
       digest(r.resolvedLive.profile)!==digest(task.live.profile) || r.resolvedLive.couponPolicy!==task.live.couponPolicy ||
       r.resolvedLive.sourceRevision!==task.live.sourceRevision || r.resolvedLive.meal!==task.live.meal ||
       normalize(r.resolvedLive.target.supply.item.name)!==normalize(task.live.target.supply.item.name) ||
-      itemGate(task.live.target.supply,r.resolvedLive.target.supply) || !matchesJdStore(task.jdOrigin,r.resolvedLive.target.supply.store,task.jdOrigin.district))
+      itemGate(task.live.target.supply,r.resolvedLive.target.supply))
       throw new CollectionError('resolved_target_mismatch');
     task={...task,live:r.resolvedLive};
   }
