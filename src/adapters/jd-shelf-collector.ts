@@ -335,12 +335,9 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
         await screen.device.tap(header.x,header.y);
         return {value:null,data:{query:input.brand,method:'reviewed_store_header',reusedSearch:!!searchEntry},evidenceIds:[proof.id]};
       }
-      // 优先按搜索结果容器的实际 bounds 计算模型输入区域；容器不可用时回退固定比例，
-      // 保证老页面仍可用（跨机型 P0-2，见 24 号计划 M1）。
-      const resultsRoot=oneAnchor(cal.searchResults,nodes);
-      const containerCrop=resultsRoot ? searchCropRegion(resultsRoot.bounds,device,{width,height}) : null;
-      const top=containerCrop?.top ?? Math.round(height*.17);
-      const cropHeight=containerCrop?.height ?? Math.round(height*.55);
+      // 容器裁剪在 u2 读屏下会改变模型输入区域，先回退到基线固定比例，等真机验收后再启用（P0-2）。
+      const top=Math.round(height*.17);
+      const cropHeight=Math.round(height*.55);
       const area=await sharp(screenshot).extract({left:0,top,width,height:cropHeight}).resize(640).png().toBuffer();
       const dimensions=await sharp(area).metadata();
       const proof=await evidenceStore.save(randomUUID(),'jd_search',area,input.brand,'live');

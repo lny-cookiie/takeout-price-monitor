@@ -18,6 +18,8 @@ if(!profile)throw new Error('手机当前账号与配送条件未登记');
 let preparationMs=0;
 if(process.argv.includes('--from-home')){
   const begun=Date.now(),signal=AbortSignal.timeout(40_000),device=await connectAndroid(source,signal),screen=new ReviewedScreen(device,source,{},signal);
+  // 预热从京东首页开始，首页在活动期持续刷新，dump 会等不到空闲；先用 u2 即时快照。
+  await device.setTreeMode?.('u2').catch(()=>undefined);
   try{await screen.device.launch(true);await screen.waitFor(['channel'],{onLaunch:true,timeoutMs:20_000});preparationMs=Date.now()-begun;}finally{await device.close();}
 }
 const response=await fetch(base+'/api/market/catalog/imports',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'commit',source:'trial',records:[{city:store.city,district:store.district,brand:store.brand,storeName:store.storeName,itemName:'板烧鸡腿堡',spec:'1人份',options:[],is_baoxiao:null}]})});
