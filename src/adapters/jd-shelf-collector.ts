@@ -13,6 +13,10 @@ import { connectAndroid, type AndroidTransport } from './android-transport.js';
 import { searchCropRegion, storeHeaderAnchor } from './jd-search-layout.js';
 
 const maximumScrolls=20, scanTimeoutMs=120_000;
+/** 页面文本比较前统一空白与全角符号，避免零宽空格、全角 & 与括号导致门店名匹配不上。 */
+function normalizeKey(value:string):string {
+  return value.replace(/[\s\u200b\u200c\u200d\ufeff]+/g,'').replace(/＆/g,'&').replace(/（/g,'(').replace(/）/g,')');
+}
 const unsafeText=/\b\d{11,}\b|收货地址|联系人|收货人|手机号|https?:|账号密码/;
 const unsafeTap=/提交订单|确认支付|立即支付|去支付|支付订单|立即购买|领取|开通会员|购买会员|去登录|同意并/;
 const packageLabel=/套餐|组合餐|随心选|随心拼|[一二两三四五六七八九十1-9]人餐|[二三四五六七八九十2-9](?:件套|件任选|拼)/;
@@ -317,9 +321,12 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
     await stage(emit,'brand_model_match',async()=>{
       const results=()=>waitFor(screen,signal,ns=>{
         if (!matchingQuery(ns)) return undefined;
+        // 结果容器刚出现时卡片还在渲染，先等卡片真正出现再做模型定位，避免在加载空白页上定位失败。
+        if (cal.resultCard && !anchors(cal.resultCard,ns).length) return undefined;
         return !pilot.resultAnchor || searchAnchor(ns) ? ns : undefined;
       });
-      let nodes=searchEntry ?? await results();
+      // searchEntry 可能是刚提交搜索、结果尚未渲染的页面；这里始终等结果卡片真正出现再匹配。
+      let nodes=await results();
       const device=await screen.device.size();
       const anchor=pilot.resultAnchor ? searchAnchor(nodes) : undefined;
       const header=anchor ? pilotStoreHeader(anchor,device) : undefined;
@@ -334,6 +341,22 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
         signal.throwIfAborted();
         await screen.device.tap(header.x,header.y);
         return {value:null,data:{query:input.brand,method:'reviewed_store_header',reusedSearch:!!searchEntry},evidenceIds:[proof.id]};
+      }
+      // 搜索结果页是原生页面，u2 能直接读到门店卡片；优先用控件树匹配，替代慢且易失败的模型定位。
+      const storeKeys=['麦当劳',pilot.name].map(normalizeKey).filter(key=>key.length>=3);
+      const treeCandidates=nodes.filter(node=>{
+        const label=normalizeKey(textOf(node));
+        if (label.length<4) return false;
+        if (!storeKeys.some(key=>label.includes(key))) return false;
+        return node.bounds.width>0 && node.bounds.height>0 && node.bounds.top>device.height*.05;
+      }).sort((a,b)=>a.bounds.top-b.bounds.top);
+      if (treeCandidates.length) {
+        const target=treeCandidates[0]!;
+        const frame=await screen.capture([target]);
+        const treeProof=await evidenceStore.save(randomUUID(),'jd_search',frame.image,textOf(target),'live',frame.at);
+        signal.throwIfAborted();
+        await tapNode(screen,target,signal);
+        return {value:null,data:{query:input.brand,method:'tree_store_match'},evidenceIds:[treeProof.id]};
       }
       // 容器裁剪在 u2 读屏下会改变模型输入区域，先回退到基线固定比例，等真机验收后再启用（P0-2）。
       const top=Math.round(height*.17);
