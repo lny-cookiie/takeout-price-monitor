@@ -78,7 +78,7 @@ export class ReviewedScreen {
     for (;;) {
       this.signal.throwIfAborted();
       let nodes: UiNode[] = [];
-      try { nodes=await this.nodes(); }
+      try { nodes=await this.nodes(true); }
       catch(e) {
         if (!(e instanceof CollectionError)) throw e;
         if (e.code==='screen_unreadable' && options.onLaunch && !launchReadRetried && Date.now()<until) {
@@ -345,11 +345,13 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           nodes=verified.nodes;
           shopProof=verified.evidence;
           // 门店页最底部的“满¥30运费¥3”就是配送费（与打包费合并显示），先记下来，结算页没有独立行时用它。
-          const pageNodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
-          const freightNode=pageNodes.find(node=>/运费¥?\d+/.test(textOf(node)));
-          const freightMatch=freightNode?/运费¥?(\d+(?:\.\d+)?)/.exec(textOf(freightNode)):null;
-          storeFreightFen=freightMatch?Math.round(Number(freightMatch[1])*100):null;
-          emit?.({phase:'freight_probe',state:'started',data:{nodes:pageNodes.length,found:!!freightNode,text:freightNode?textOf(freightNode).slice(0,24):null,fen:storeFreightFen}});
+          if (source.selectors.buyNow) {
+            const pageNodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            const freightNode=pageNodes.find(node=>/运费¥?\d+/.test(textOf(node)));
+            const freightMatch=freightNode?/运费¥?(\d+(?:\.\d+)?)/.exec(textOf(freightNode)):null;
+            storeFreightFen=freightMatch?Math.round(Number(freightMatch[1])*100):null;
+            emit?.({phase:'freight_probe',state:'started',data:{nodes:pageNodes.length,found:!!freightNode,text:freightNode?textOf(freightNode).slice(0,24):null,fen:storeFreightFen}});
+          }
           await unavailability(nodes);
         } else {
           note('launch','等待指定外卖入口和点位。');
@@ -657,7 +659,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           if(task.specified) {
             const captured=await captureCheckout(screen,nodes,checkoutItems,evidenceStore,signal,[shopProof.id,optionProof.id,cartProof?.id??""]);
             // 结算页费用明细可能在首屏下方：滚动一次读取运费/打包费（用户确认结算页有运费显示）。
-            try {
+            if (source.selectors.buyNow) try {
               const viewport=await screen.device.size();
               await screen.device.swipe?.({x:viewport.width/2,y:viewport.height*.78},{x:viewport.width/2,y:viewport.height*.32},signal);
               await wait(700,undefined,{signal});
@@ -770,7 +772,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             stepStart('restore');
             const restoreStarted=Date.now();
             try {
-              if (cleanup==='untouched' && inCheckout) {
+              if (cleanup==='untouched' && inCheckout && source.selectors.buyNow) {
                 // 立即购买不修改购物车；退一步离开结算页即可，省掉约 20 秒清空与回菜单流程。
                 await screen.device.back();
                 await wait(500,undefined,{signal});
