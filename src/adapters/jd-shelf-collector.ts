@@ -10,7 +10,7 @@ import type { ModelGateway } from '../infra/model.js';
 import { ReviewedScreen, resourceOf, textOf } from './android-collector.js';
 import type { AndroidSource, JdShelfCalibration, ShelfField, ShelfLocator } from './android-source.js';
 import { connectAndroid, type AndroidTransport } from './android-transport.js';
-import { searchCropRegion } from './jd-search-layout.js';
+import { searchCropRegion, storeHeaderAnchor } from './jd-search-layout.js';
 
 const maximumScrolls=20, scanTimeoutMs=120_000;
 const unsafeText=/\b\d{11,}\b|收货地址|联系人|收货人|手机号|https?:|账号密码/;
@@ -132,10 +132,8 @@ function modelOrder(value:unknown) {
 }
 
 export function pilotStoreHeader(anchor:UiNode, viewport:{width:number;height:number}) {
-  const {left,top,width,height}=anchor.bounds;
-  if (!(left>viewport.width*.43 && left<viewport.width*.70 && top>viewport.height*.21 && top<viewport.height*.29 &&
-    width>0 && left+width<=viewport.width+2 && height>0)) return undefined;
-  return {x:left+width*.25,y:top-viewport.height*.035};
+  // 统一委托到参数化的版式函数：默认窗口与历史实现一致，窗口可由配置覆盖。
+  return storeHeaderAnchor(anchor.bounds, viewport) ?? undefined;
 }
 export function canReuseJdIdentity(input:JdRunInput,source:AndroidSource,title:string|null,at=Date.now()) {
   const cached=input.verifiedContext,age=cached?at-Date.parse(cached.evidence.captured_at):Infinity;

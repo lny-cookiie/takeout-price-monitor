@@ -40,8 +40,10 @@ test('门店头部锚点超出窗口返回 null（版式变化时停止而不是
   assert.equal(storeHeaderAnchor(offX, viewport), null);
   const offY = { left: viewport.width * 0.5, top: viewport.height * 0.6, width: 120, height: viewport.height * 0.05 };
   assert.equal(storeHeaderAnchor(offY, viewport), null);
+  // 高度下限默认不启用（与原 pilotStoreHeader 行为一致），显式开启时才拦
   const tooShort = { left: viewport.width * 0.5, top: viewport.height * 0.25, width: 120, height: 2 };
-  assert.equal(storeHeaderAnchor(tooShort, viewport), null);
+  assert.ok(storeHeaderAnchor(tooShort, viewport));
+  assert.equal(storeHeaderAnchor(tooShort, viewport, { ...DEFAULT_STORE_HEADER_WINDOW, minHeightRatio: 0.035 }), null);
 });
 
 test('窗口参数可配置，换机型只改配置', () => {

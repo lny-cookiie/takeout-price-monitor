@@ -55,7 +55,7 @@ export interface StoreHeaderWindow {
 }
 
 /** 基线机型（HBN-AL00，1260×2844）校准的窗口；其他机型需要重新校准并登记。 */
-export const DEFAULT_STORE_HEADER_WINDOW: StoreHeaderWindow = { minX: 0.43, maxX: 0.70, minY: 0.21, maxY: 0.29, minHeightRatio: 0.035 };
+export const DEFAULT_STORE_HEADER_WINDOW: StoreHeaderWindow = { minX: 0.43, maxX: 0.70, minY: 0.21, maxY: 0.29, minHeightRatio: 0 };
 
 /**
  * 判断搜索结果卡片是否处于「门店头部」位置，返回可点击坐标（逻辑坐标）。
