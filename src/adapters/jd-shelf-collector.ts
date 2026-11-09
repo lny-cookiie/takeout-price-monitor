@@ -354,8 +354,9 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
       await screen.device.setTreeMode?.('dump').catch(()=>undefined);
       const results=()=>waitFor(screen,signal,ns=>{
         if (!matchingQuery(ns)) return undefined;
-        // 结果容器刚出现时卡片还在渲染，先等卡片真正出现再做模型定位，避免在加载空白页上定位失败。
-        if (cal.resultCard && !anchors(cal.resultCard,ns).length) return undefined;
+        // 搜索结果页加载中只有搜索框和少量节点；等门店卡片真正渲染（排除顶部搜索框）再匹配。
+        const cardVisible=ns.some(node=>normalizeKey(textOf(node)).includes(normalizeKey(input.brand))&&node.bounds.width>0&&node.bounds.height>0&&node.bounds.top>device.height*.08);
+        if (!cardVisible) return undefined;
         return !pilot.resultAnchor || searchAnchor(ns) ? ns : undefined;
       });
       // searchEntry 可能是刚提交搜索、结果尚未渲染的页面；这里始终等结果卡片真正出现再匹配。
