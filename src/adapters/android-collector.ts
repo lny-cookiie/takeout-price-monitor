@@ -342,9 +342,11 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           nodes=verified.nodes;
           shopProof=verified.evidence;
           // 门店页最底部的“满¥30运费¥3”就是配送费（与打包费合并显示），先记下来，结算页没有独立行时用它。
-          const freightNode=nodes.find(node=>/运费¥?\d+/.test(textOf(node)));
+          const pageNodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
+          const freightNode=pageNodes.find(node=>/运费¥?\d+/.test(textOf(node)));
           const freightMatch=freightNode?/运费¥?(\d+(?:\.\d+)?)/.exec(textOf(freightNode)):null;
           storeFreightFen=freightMatch?Math.round(Number(freightMatch[1])*100):null;
+          emit?.({phase:'freight_probe',state:'started',data:{nodes:pageNodes.length,found:!!freightNode,text:freightNode?textOf(freightNode).slice(0,24):null,fen:storeFreightFen}});
           await unavailability(nodes);
         } else {
           note('launch','等待指定外卖入口和点位。');
@@ -651,6 +653,17 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           if(couponEntry&&couponAllowed)emit?.({phase:'coupon_checkout',state:'succeeded',data:{policy:context.couponPolicy,action:'已点击领券结算，实际抵扣以结算证据为准'}});
           if(task.specified) {
             const captured=await captureCheckout(screen,nodes,checkoutItems,evidenceStore,signal,[shopProof.id,optionProof.id,cartProof?.id??""]);
+            // 结算页费用明细可能在首屏下方：滚动一次读取运费/打包费（用户确认结算页有运费显示）。
+            try {
+              const viewport=await screen.device.size();
+              await screen.device.swipe?.({x:viewport.width/2,y:viewport.height*.78},{x:viewport.width/2,y:viewport.height*.32},signal);
+              await wait(700,undefined,{signal});
+              const feeNodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
+              const feeNode=feeNodes.find(node=>/(运费|配送费|打包费)¥?\d/.test(textOf(node)));
+              const feeMatch=feeNode?/(?:运费|配送费|打包费)¥?(\d+(?:\.\d+)?)/.exec(textOf(feeNode)):null;
+              if (feeMatch) storeFreightFen=Math.round(Number(feeMatch[1])*100);
+              emit?.({phase:'fee_probe',state:'started',data:{found:!!feeNode,text:feeNode?textOf(feeNode).slice(0,24):null,fen:storeFreightFen}});
+            } catch {}
             evidence=captured.proofs[0]!;
             stepEnd({state:'succeeded',data:{pageCount:captured.frames.length},evidenceIds:captured.proofs.map(p=>p.id)});
             emit?.({phase:'model_verify',state:'started'});
@@ -702,6 +715,12 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             catch { return null; }
           };
           const components = Object.fromEntries(breakdownKeys.map(k=>[k,toReading(fields[k]?.raw,k==='discount')])) as QuoteDetails['components'];
+          // 结算页没有独立运费/打包费行（或未展开）时，用门店页或滚动读到的运费补上（用户确认运费即打包费）。
+          if (storeFreightFen!==null) {
+            const freightReading={raw:(storeFreightFen/100).toFixed(2),fen:storeFreightFen,evidence:evidence!};
+            if (!components.delivery) components.delivery=freightReading;
+            if (!components.packaging) components.packaging=freightReading;
+          }
           const missing: Record<string,string> = {};
           for (const k of breakdownKeys) if (!components[k]) missing[k]=fields[k] ? '金额口径不明确' : '结算页未显示或尚未配置';
           const known = Object.values(components).every(v=>v!==null) && source.feesSeparate===true && source.subtotalBasis!=='unknown';
