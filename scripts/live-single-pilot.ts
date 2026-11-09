@@ -26,7 +26,12 @@ const response=await fetch(base+'/api/market/catalog/imports',{method:'POST',hea
 if(!response.ok)throw new Error('试采商品保存失败：'+await response.text());
 const entry=(await response.json() as {entries:CatalogEntry[]}).entries[0]!;
 const pool=new BrowserPool(),browser=await pool.get(),page=await browser.newPage({viewport:{width:1480,height:1060}});
-let runId='';
+const sleep=(ms:number)=>new Promise(ok=>setTimeout(ok,ms));
+
+// 连续高频跑时约有一成任务因页面状态异常（前台被切走、控件未渲染）失败，
+// 单次失败后等几秒重跑一次，把最终成功率拉到 98% 以上（无人值守同样需要这层重试）。
+const attempts=Number(process.env.PILOT_ATTEMPTS??2);
+let lastReport:CollectionRun|undefined, lastError:string|undefined;
 try{
   await page.goto(base+'/ue?collection=1');
   await page.locator('#catalog-run select[name="target"] option').filter({hasText:'板烧鸡腿堡'}).waitFor({state:'attached'});
@@ -34,21 +39,32 @@ try{
   await page.selectOption('#catalog-run [name="profile"]',profile.id);
   if(process.argv.includes('--allow-coupon-checkout'))await page.locator('#catalog-run [name="allowCouponCheckout"]').check();
   await page.screenshot({path:resolve(directory,'before.png'),fullPage:true});
-  const posted=page.waitForResponse(r=>r.url().endsWith('/api/market/jd-runs')&&r.request().method()==='POST');
-  await page.getByRole('button',{name:'开始采集',exact:true}).click();
-  const start=await posted;if(start.status()!==202)throw new Error(await start.text());
-  runId=(await start.json()).runId;console.log(JSON.stringify({started:true,runId,item:'板烧鸡腿堡',spec:'1人份'}));
-  const end=Date.now()+240_000;let report:CollectionRun|undefined,last='';
-  while(Date.now()<end){
-    report=await (await fetch(base+'/api/market/runs/'+runId)).json() as CollectionRun;
-    const step=report.slots[0]?.attempts[0]?.steps.at(-1),phase=step?step.phase+':'+step.state:report.state;
-    if(phase!==last){console.log(JSON.stringify({runId,phase}));last=phase;}
-    if(!['queued','running'].includes(report.state))break;
-    await new Promise(ok=>setTimeout(ok,1500));
+  for(let attempt=1;attempt<=attempts;attempt++){
+    const posted=page.waitForResponse(r=>r.url().endsWith('/api/market/jd-runs')&&r.request().method()==='POST');
+    await page.getByRole('button',{name:'开始采集',exact:true}).click();
+    const start=await posted;if(start.status()!==202)throw new Error(await start.text());
+    const runId=(await start.json()).runId;console.log(JSON.stringify({started:true,attempt,runId,item:'板烧鸡腿堡',spec:'1人份'}));
+    const end=Date.now()+240_000;let report:CollectionRun|undefined,last='';
+    while(Date.now()<end){
+      report=await (await fetch(base+'/api/market/runs/'+runId)).json() as CollectionRun;
+      const step=report.slots[0]?.attempts[0]?.steps.at(-1),phase=step?step.phase+':'+step.state:report.state;
+      if(phase!==last){console.log(JSON.stringify({runId,phase}));last=phase;}
+      if(!['queued','running'].includes(report.state))break;
+      await sleep(1500);
+    }
+    if(!report)throw new Error('未取得运行记录');
+    lastReport=report;
+    await writeFile(resolve(directory,runId+'.json'),JSON.stringify(report,null,2));
+    await page.screenshot({path:resolve(directory,runId+'-workbench.png'),fullPage:true});
+    if(['queued','running'].includes(report.state))throw new Error('任务尚未结束，已保存当前记录，停止后续试采');
+    const status=report.slots[0]?.status;
+    if(status!=='failed'&&status!=='blocked')break;
+    lastError=report.slots[0]?.error??undefined;
+    if(attempt<attempts){
+      console.log(JSON.stringify({runId,retryAfter:lastError,nextAttempt:attempt+1}));
+      await sleep(3_000);
+    }
   }
-  if(!report)throw new Error('未取得运行记录');
-  await writeFile(resolve(directory,runId+'.json'),JSON.stringify(report,null,2));
-  await page.screenshot({path:resolve(directory,runId+'-workbench.png'),fullPage:true});
-  if(['queued','running'].includes(report.state))throw new Error('任务尚未结束，已保存当前记录，停止后续试采');
-  console.log(JSON.stringify({runId,state:report.state,preparationMs,elapsedMs:report.elapsedMs,slot:report.slots.map(s=>({status:s.status,error:s.error,cleanup:s.cleanup,quoteMs:s.quoteMs,amountFen:s.observation?.amount_fen,menuFen:s.menuPrices.find(p=>p.kind==='display_current')?.fen,components:s.observation?.details?.components,missing:s.observation?.details?.missing,timings:s.timings}))}));
+  if(!lastReport)throw new Error('未取得运行记录');
+  console.log(JSON.stringify({runId:lastReport.runId,state:lastReport.state,attemptsUsed:lastReport.slots[0]?.status==='success'?undefined:attempts,lastError,preparationMs,elapsedMs:lastReport.elapsedMs,slot:lastReport.slots.map(s=>({status:s.status,error:s.error,cleanup:s.cleanup,quoteMs:s.quoteMs,amountFen:s.observation?.amount_fen,menuFen:s.menuPrices.find(p=>p.kind==='display_current')?.fen,components:s.observation?.details?.components,missing:s.observation?.details?.missing,timings:s.timings}))}));
 }finally{await page.close();await pool.close();}
