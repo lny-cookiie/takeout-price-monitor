@@ -651,6 +651,26 @@ async function scanMenu(screen:ReviewedScreen,cal:JdShelfCalibration,store:Suppl
 export async function findJdMenuItem(screen:ReviewedScreen,store:Supply['store'],target:Supply['item'],signal:AbortSignal):Promise<void> {
   const cal=screen.source.jdShelf;
   if (!cal || target.kind!=='single' || !target.spec || target.options===null) throw new CollectionError('variant_controls_unverified','blocked');
+  // 优先店内搜索：滚动解析整份菜单要 100 秒以上，搜索一次就能直接定位单品。
+  if (cal.pilot && screen.source.selectors.menuSearch) {
+    try {
+      const entry=await screen.waitFor(['menuSearch'],{timeoutMs:6_000});
+      await screen.tap('menuSearch',entry);
+      await wait(800,undefined,{signal});
+      await screen.device.search(target.name,signal,true);
+      await wait(1_500,undefined,{signal});
+      const results=await screen.nodes(true).catch(()=>[] as UiNode[]);
+      const hit=results.filter(node=>normalizeKey(textOf(node)).includes(normalizeKey(target.name))&&node.bounds.width>0&&node.bounds.height>0)
+        .sort((a,b)=>b.bounds.top-a.bounds.top)[0];
+      if (hit) {
+        await tapNode(screen,hit,signal);
+        // 商品详情弹窗是原生渲染，u2 能读规格与加入购物车。
+        await screen.device.setTreeMode?.('u2').catch(()=>undefined);
+        await wait(800,undefined,{signal});
+        return;
+      }
+    } catch { /* 店内搜索不可用时回退菜单解析 */ }
+  }
   const seen=new Set<string>(), scanSignal=AbortSignal.any([signal,AbortSignal.timeout(35_000)]);
   if (cal.pilot && screen.source.selectors.category) await selectPilotCategory(screen,signal);
   const options=JSON.stringify(target.options.map(specKey).sort());

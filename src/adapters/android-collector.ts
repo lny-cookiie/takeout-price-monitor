@@ -401,6 +401,8 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           await screen.tap('item',nodes);
         }
         note('variant','核对商品规格、口味和套餐组成。');
+        // 商品详情弹窗是原生渲染，u2 能读规格；dump 在详情页会整次超时。
+        await screen.device.setTreeMode?.('u2').catch(()=>undefined);
         try{nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,...(task.specified?{timeoutMs:6_000}:{})});}
         catch(error){
           const current=await screen.nodes();
