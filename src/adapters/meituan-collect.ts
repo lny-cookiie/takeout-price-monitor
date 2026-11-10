@@ -62,8 +62,10 @@ export function readMeituanSettlement(nodes: U2Node[]): Partial<MeituanQuote> & 
         const dxA = la >= tagLeft ? la - tagLeft : 9999;
         const dxB = lb >= tagLeft ? lb - tagLeft : 9999;
         const dyA = Math.abs(a.y - hit.y), dyB = Math.abs(b.y - hit.y);
-        if (dxA < 200 && dxB >= 200) return -1;
-        if (dxB < 200 && dxA >= 200) return 1;
+        // 红包行横跨整行（“美团红包 …… 3元红包”），横向窗口要放宽；券前这类要收紧避免抓到会员卡。
+        const win = /红包|优惠|立减|合计|实付/.test(label) ? 500 : 200;
+        if (dxA < win && dxB >= win) return -1;
+        if (dxB < win && dxA >= win) return 1;
         const scoreA = dxA + dyA * 2, scoreB = dxB + dyB * 2;
         return scoreA - scoreB;
       })[0];
@@ -200,7 +202,7 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   if (!search) throw new Error('meituan_no_search_button');
   await semantic.tap(search, '搜索按钮');
 
-  step('搜索页历史词');
+  step('搜索品牌');
   // 层级 1：键盘输入品牌名（device.search，中文已验证可用，不依赖历史记录）；
   // 层级 2：精确匹配历史词；层级 3：包含匹配。
   const inResultPage = async () => {
