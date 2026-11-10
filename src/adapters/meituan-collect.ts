@@ -213,16 +213,31 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   if (!enteredShopSearch) throw new Error('meituan_no_shop_search');
 
   step('店内搜索热门词');
-  const hot = await semantic.find(n => nodeLabel(n).trim() === itemName, 12_000);
-  if (!hot) throw new Error('meituan_no_hot_word');
-  await semantic.tap(hot, `热门 ${itemName}`);
+  // 店内搜索页是 MRNX 自绘容器，读屏不可用：优先视觉点热门词，语义仅作兜底。
+  const hotSemantic = await semantic.find(n => nodeLabel(n).trim() === itemName, 4_000).catch(() => null);
+  if (hotSemantic) {
+    await semantic.tap(hotSemantic, `热门 ${itemName}`);
+  } else if (options.visualLocate) {
+    const hotHit = await options.visualLocate(`搜索结果里“${itemName}”这个热门搜索词/商品名`);
+    if (!hotHit) throw new Error('meituan_no_hot_word');
+    await options.tapPoint(hotHit.x, hotHit.y);
+    await sleep(1_800);
+  } else {
+    throw new Error('meituan_no_hot_word');
+  }
 
   step('单品');
-  // 搜索结果页顶部搜索框里也会出现商品名文本，取列表里最靠下的同名商品卡（列表在搜索框下方）。
-  const itemCandidates = await semantic.findAll(n => nodeLabel(n).trim() === itemName, 14_000);
-  const item = itemCandidates.length ? itemCandidates[itemCandidates.length - 1]! : null;
-  if (!item) throw new Error('meituan_no_item');
-  await semantic.tap(item, itemName);
+  // 单品列表同为 MRNX：视觉定位商品卡（提示词贴商品名+价格），语义兜底。
+  let itemTapped = false;
+  const itemCandidates = await semantic.findAll(n => nodeLabel(n).trim() === itemName, 5_000).catch(() => []);
+  if (itemCandidates.length) {
+    await semantic.tap(itemCandidates[itemCandidates.length - 1]!, itemName);
+    itemTapped = true;
+  } else if (options.visualLocate) {
+    const itemHit = await options.visualLocate(`商品列表里“${itemName}”这张商品卡（带价格的那一行）`);
+    if (itemHit) { await options.tapPoint(itemHit.x, itemHit.y); itemTapped = true; await sleep(1_800); }
+  }
+  if (!itemTapped) throw new Error('meituan_no_item');
 
   step('加入购物车');
   const add = await semantic.find(n => nodeLabel(n).includes('加入购物车'), 12_000);
