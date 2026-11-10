@@ -140,13 +140,17 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   // 层级 2：精确匹配历史词；层级 3：包含匹配。
   const inResultPage = async () => {
     const ns = await semantic.waitStable(6);
-    return ns.some(n => nodeLabel(n).includes('综合排序') || nodeLabel(n).includes('全部'));
+    return ns.some(n => /综合排序|销量|筛选|全部/.test(nodeLabel(n)));
   };
   let searched = false;
   if (options.searchText) {
     try {
       await options.searchText(brand);
-      searched = await inResultPage();
+      // 键盘搜索后结果页要几百毫秒才渲染，轮询最多 6 秒，避免误判成“没搜到”而回退到历史词（历史词可能进了错误品牌）。
+      for (let i = 0; i < 6 && !searched; i++) {
+        await sleep(1_000);
+        searched = await inResultPage();
+      }
     } catch {
       searched = false;
     }
@@ -188,7 +192,30 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
       await semantic.waitStable(5);
     }
   }
+  // 历史搜索词点击可能直接落进门店页（跳过结果页），此时门店卡定位必然失败，按已进店处理。
+  // 但必须先校验门店品牌：曾出现进了“华莱士”却继续搜板烧鸡腿堡的低级错误。
+  const isTargetStore = async () => {
+    const ns=await semantic.waitStable(6);
+    const labels=ns.map(n=>nodeLabel(n));
+    const onStorePage=labels.some(l=>l.trim().startsWith('点菜')) && labels.some(l=>l.trim().startsWith('评价'));
+    const brandOk=labels.some(l=>l.includes(brand));
+    return {onStorePage, brandOk};
+  };
+  if (!enteredStore) {
+    const state=await isTargetStore();
+    if (state.onStorePage && state.brandOk) {
+      console.log('[meituan] 已直接进入目标门店页，跳过门店卡定位');
+      enteredStore=true;
+    } else if (state.onStorePage && !state.brandOk) {
+      throw new Error('meituan_wrong_store');
+    }
+  }
   if (!enteredStore) throw new Error('meituan_store_card_unlocated');
+  // 二次保险：无论从哪里进店，都必须确认门店品牌是目标品牌。
+  {
+    const state=await isTargetStore();
+    if (!state.brandOk) throw new Error('meituan_wrong_store');
+  }
 
   step('门店页搜索图标');
   // 美团门店页有两种容器：WMRestaurantActivity 的“搜索”可语义读取，MRNStandardActivity 读不到，需要视觉兜底。
@@ -272,9 +299,25 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   }
 
   step('去结算');
-  const go = await semantic.find(n => nodeLabel(n).includes('去结算') || nodeLabel(n).includes('去支付'), 18_000);
-  if (!go) throw new Error('meituan_no_checkout');
-  await semantic.tap(go, '去结算');
+  // 点击后必须校验真的到了结算页（商品原价/打包费/合计这类字段），否则重试最多 3 次。
+  const isCheckout = async () => {
+    const ns = await semantic.waitStable(6);
+    const labels = ns.map(n => nodeLabel(n));
+    return labels.some(l => /商品原价|打包费|配送费|合计|实付/.test(l));
+  };
+  let inCheckout = false;
+  for (let attempt = 0; attempt < 3 && !inCheckout; attempt++) {
+    const go = await semantic.find(n => nodeLabel(n).includes('去结算') || nodeLabel(n).includes('去支付'), 12_000);
+    if (!go) {
+      if (await isCheckout()) { inCheckout = true; break; }
+      throw new Error('meituan_no_checkout');
+    }
+    await semantic.tap(go, '去结算');
+    await sleep(2_000);
+    inCheckout = await isCheckout();
+    if (!inCheckout) console.log('[meituan] 去结算点击后未到结算页，重试', attempt + 1);
+  }
+  if (!inCheckout) throw new Error('meituan_checkout_not_reached');
 
   return steps;
 }
