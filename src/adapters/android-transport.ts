@@ -120,10 +120,24 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
   const setTreeMode = async (mode: 'u2' | 'dump'): Promise<void> => {
     if (mode === treeMode) return;
     if (mode === 'u2') {
-      const reader = await ensureU2();
-      if (!reader) throw new CollectionError('u2_unavailable','blocked');
-      // 切换后先预热一次读取：服务起不来就明确报错，不能静默回落 dump（详情页 dump 会整次超时）。
-      await reader.read();
+      // u2 服务刚重启或尚未就绪时会瞬时连不上（fetch failed）：重试 3 次吸收这个窗口，
+      // 重试耗尽才明确失败，避免整条链路因为一次连接拒绝而中断。
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const reader = await ensureU2();
+          if (!reader) throw new CollectionError('u2_unavailable', 'blocked');
+          // 切换后先预热一次读取：服务起不来就明确报错，不能静默回落 dump（详情页 dump 会整次超时）。
+          await reader.read();
+          treeMode = mode;
+          return;
+        } catch (error) {
+          lastError = error;
+          u2 = null;
+          if (attempt < 3) await wait(1_200);
+        }
+      }
+      throw lastError instanceof CollectionError ? lastError : new CollectionError('u2_unavailable', 'blocked');
     } else {
       await stopU2();
     }

@@ -16,7 +16,7 @@ function runStep(name: string, cmd: string, args: string[], timeoutMs: number, l
     const fd = openSync(logPath, 'w');
     const child = spawn(cmd, args, {cwd: process.cwd(), env: {...process.env, MIDSCENE_ADB_PATH: ADB}, stdio: ['ignore', fd, fd]});
     let killed = false;
-    // 看门狗：日志超过 12 秒没有新内容 = 页面卡住了，立即打印诊断并强杀，不无限空等。
+    // 看门狗：日志超过 90 秒没有新内容 = 页面卡住了，立即打印诊断并强杀，不无限空等。
     let stalled = false;
     let lastSize = 0;
     const watchdog = setInterval(() => {
@@ -31,7 +31,7 @@ function runStep(name: string, cmd: string, args: string[], timeoutMs: number, l
           lastSize = stat.size;
         }
       } catch {}
-    }, 12_000);
+    }, 90_000);
     const timer = setTimeout(() => { killed = true; child.kill('SIGKILL'); }, timeoutMs);
     child.on('close', code => {
       clearTimeout(timer);
@@ -86,6 +86,18 @@ async function waitService(url: string, timeoutMs = 30_000): Promise<boolean> {
 }
 
 await mkdir(OUT, {recursive: true});
+// 每轮开始前清暂停记录与历史 attempt：否则京东会直接返回 scope_paused_after_page_not_ready（11 秒假失败）。
+try {
+  const {DatabaseSync} = await import('node:sqlite');
+  const db = new DatabaseSync('.runtime/observatory.sqlite');
+  db.exec('PRAGMA foreign_keys=OFF');
+  for (const t of ['attempt_steps','slots','attempts','paused_resources']) {
+    try { db.prepare('DELETE FROM '+t).run(); } catch {}
+  }
+  db.exec('PRAGMA foreign_keys=ON');
+  db.close();
+  log('已清理暂停记录与历史 attempt');
+} catch (error) { log('清理失败（不阻塞）', (error as Error).message.slice(0,80)); }
 const results: Array<{name: string; code: number; seconds: number; business?: string}> = [];
 
 // 1 美团

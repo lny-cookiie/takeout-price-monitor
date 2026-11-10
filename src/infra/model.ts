@@ -77,7 +77,7 @@ export class ModelGateway {
       const agent = new Agent(frame,{
         generateReport:false,persistExecutionDump:false,autoPrintReportMsg:false,
         modelConfig:{MIDSCENE_MODEL_BASE_URL:cfg.baseUrl,MIDSCENE_MODEL_API_KEY:cfg.key,
-          MIDSCENE_MODEL_NAME:cfg.model,MIDSCENE_MODEL_FAMILY:cfg.family,MIDSCENE_MODEL_TIMEOUT:45_000,MIDSCENE_MODEL_RETRY_COUNT:0,MIDSCENE_MODEL_STREAM_MODE:'non-stream'},
+          MIDSCENE_MODEL_NAME:cfg.model,MIDSCENE_MODEL_FAMILY:cfg.family,MIDSCENE_MODEL_TIMEOUT:20_000,MIDSCENE_MODEL_RETRY_COUNT:0,MIDSCENE_MODEL_STREAM_MODE:'non-stream'},
         onLLMUsage:info => report(info)
       });
       try {

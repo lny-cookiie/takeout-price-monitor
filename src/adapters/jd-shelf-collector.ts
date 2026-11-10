@@ -689,6 +689,11 @@ export async function findJdMenuItem(screen:ReviewedScreen,store:Supply['store']
         // 商品详情弹窗是原生渲染，u2 能读规格与加入购物车。
         await screen.device.setTreeMode?.('u2').catch((e)=>console.error('[diag] store-search: u2 switch failed',String(e).slice(0,100)));
         await wait(800,undefined,{signal});
+        // 点击后校验详情弹窗是否真的打开：后续 sku_match 找不到 spec/add 时会报 control_missing。
+        const after=await screen.nodes(true).catch(()=>[] as UiNode[]);
+        const texts=after.map(n=>textOf(n)).filter(Boolean);
+        const hasDetail=/加入购物车|立即购买|选规格|已选/.test(texts.join(' '));
+        console.error('[diag] store-search: after tap nodes',after.length,'detail',hasDetail,'sample',JSON.stringify(texts.slice(0,10)));
         return;
       }
     } catch (e) { console.error('[diag] store-search failed',String(e).slice(0,140)); }

@@ -144,7 +144,9 @@ export class AndroidSources {
   get(platform: Platform) { return this.rows.find(row=>row.platform===platform); }
   permitted(platform: Platform, at = Date.now()) {
     const source = this.get(platform);
-    return !!source && Date.parse(source.access.expiresAt)>at && (platform !== 'taobao_instant' || Boolean(source.access.writtenPermission?.trim()));
+    const ok = !!source && Date.parse(source.access.expiresAt)>at && (platform !== 'taobao_instant' || Boolean(source.access.writtenPermission?.trim()));
+    if (!ok) console.error('[diag] permitted=false',platform,'hasSource',!!source,'expires',source?.access?.expiresAt,'now',new Date(at).toISOString());
+    return ok;
   }
   status(platform: Platform) {
     const source = this.get(platform);

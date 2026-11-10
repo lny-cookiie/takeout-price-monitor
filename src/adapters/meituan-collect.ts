@@ -39,8 +39,8 @@ export function readMeituanSettlement(nodes: U2Node[]): Partial<MeituanQuote> & 
   const valueNear = (label: string, tolerance = 40): string => {
     const hit = rows.find(r => r.label.includes(label));
     if (!hit) return '';
-    // 只看纯金额节点（¥33.55 / 26.5 这种），避免把“共减¥0.05”这类说明文字当成金额。
-    const isAmount = (text: string) => /^[¥￥]?\s*\d[\d.]*\s*元?$/.test(text.trim());
+    // 金额节点必须带 ¥ 前缀或含小数位：纯整数（如红包里的“3”）是说明文字片段，不是金额。
+    const isAmount = (text: string) => /^[¥￥]\s*\d+(?:\.\d+)?\s*元?$/.test(text.trim()) || /^\d+\.\d+\s*元?$/.test(text.trim());
     const candidate = rows
       .filter(r => Math.abs(r.y - hit.y) <= tolerance && r !== hit && isAmount(r.label))
       .sort((a, b) => Math.abs(a.y - hit.y) - Math.abs(b.y - hit.y))[0];

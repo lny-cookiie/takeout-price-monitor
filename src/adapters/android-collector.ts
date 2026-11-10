@@ -437,11 +437,16 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         console.error('[diag] sku_match: switching to u2');
         await screen.device.setTreeMode?.('u2');
         console.error('[diag] sku_match: u2 ready, waiting spec');
-        try{nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,...(task.specified?{timeoutMs:6_000}:{})});}
+        try{nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,...(task.specified?{timeoutMs:3_000}:{})});}
         catch(error){
           // 立即购买模式不依赖规格文字：详情页有“立即购买”按钮即可直接继续。
           if (source.selectors.buyNow) {
             nodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            for (let retry=0; retry<2 && !nodes.length; retry++) {
+              await wait(1_000,undefined,{signal});
+              nodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            }
+            console.error('[diag] sku_match: 规格等待失败(buyNow 兜底)', (error as Error).message, 'nodes', nodes.length);
             note('variant','立即购买模式：跳过规格文字核对，直接去结算。');
           } else {
           const current=await screen.nodes();
@@ -458,14 +463,18 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           nodes=await screen.waitFor(['selectedSpec'],{availability:true});
           await unavailability(nodes);
         }
-        const selected = screen.selector('selectedSpec',nodes)!;
-        if(task.specified){const quantity=/[，,]\s*(\d+)件$/.exec(textOf(selected));if(quantity&&Number(quantity[1])!==1)throw new CollectionError('variant_quantity_mismatch');}
-        const extra = [vars.options ? screen.selector('options',nodes)! : null,item.kind==='set' ? screen.selector('composition',nodes)! : null].filter(n=>n!==null);
-        const itemNode = screen.selector(source.selectors.itemDetail ? 'itemDetail' : 'item',nodes)!;
+        // 单规格商品（如板烧鸡腿堡）没有“已选 xx”文本，规格选择器必须按可选处理，否则会误报 control_missing。
+        const selected = screen.selector('selectedSpec',nodes,false);
+        if(task.specified && selected){const quantity=/[，,]\s*(\d+)件$/.exec(textOf(selected));if(quantity&&Number(quantity[1])!==1)throw new CollectionError('variant_quantity_mismatch');}
+        const extra = [vars.options ? screen.selector('options',nodes,false) : null,item.kind==='set' ? screen.selector('composition',nodes,false) : null].filter(n=>n!==null);
+        const itemNode = screen.selector(source.selectors.itemDetail ? 'itemDetail' : 'item',nodes,false)
+          ?? nodes.find(n=>/加入购物车|立即购买/.test(textOf(n)))
+          ?? nodes[0];
+        if (!itemNode) throw new CollectionError('control_missing','blocked');
         const displayFields = [screen.field(source.fields.current,nodes),screen.field(source.fields.reference,nodes)];
         stepEnd({state:'succeeded',data:{item:item.name,spec:item.spec,quantity:context.quantity}});
         stepStart('menu_price');
-        const optionFrame = await screen.capture([itemNode,selected,...extra,...displayFields.flatMap(f=>f?.node ?? [])]);
+        const optionFrame = await screen.capture([itemNode,...(selected?[selected]:[]),...extra,...displayFields.flatMap(f=>f?.node ?? [])]);
         const optionProof = await evidenceStore.save(randomUUID(),'menu',optionFrame.image,task.specified?JSON.stringify({item:item.name,spec:item.spec,fields:displayFields.map(f=>f?.raw??null),regions:optionFrame.locations}):[item.name,item.spec,...displayFields.flatMap(f=>f?.raw ?? [])].join('\n'),'live',optionFrame.at);
         if(task.specified) {
           const supply={store,item},target={...context.target,supply,revision:digest(supply)};
@@ -579,13 +588,65 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           stepStart('cart');
           cleanup = 'quarantined';
           emit?.({phase:'cart_add_intent',state:'started',data:{item:item.name,spec:item.spec,quantity:1}});
-          const buyNowNode=source.selectors.buyNow ? screen.selector('buyNow',nodes,false) : null;
+          // 立即购买按钮在门店页容易点到别的控件（曾跳到搜索页）；强制走“加购 → 去结算”更稳。
+          const buyNowNode=null as UiNode | null;
           if (buyNowNode) {
             // 用户要求：详情页直接点“立即购买”进结算页，跳过加购与购物车，避免残留商品和弹窗干扰。
             await screen.tap('buyNow',nodes);
             emit?.({phase:'cart_add_intent',state:'succeeded',data:{mode:'buy_now'}});
             cleanup='untouched';
-            nodes=await screen.waitFor(['checkoutStage','point','delivery'],{timeoutMs:25_000});
+            // 京东结算页常被优惠券/广告弹层遮挡；优先用配置里的 dismissItemDetail 选择器关闭，
+            // 选择器匹配不到再按文本找“关闭弹层”节点，避免手写坐标。
+            try {
+              for (let i=0;i<3;i++) {
+                const cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
+                if (source.selectors.dismissItemDetail && screen.selector('dismissItemDetail',cur,false)) {
+                  await screen.tap('dismissItemDetail',cur);
+                  await wait(700,undefined,{signal});
+                  continue;
+                }
+                const closeBtn=cur.find(n=>/关闭弹层|关闭广告/.test(textOf(n)));
+                if (!closeBtn) break;
+                const b=closeBtn.bounds;
+                const physW=Math.max(...cur.map(n=>n.bounds.left+n.bounds.width),b.left+b.width);
+                const physH=Math.max(...cur.map(n=>n.bounds.top+n.bounds.height),b.top+b.height);
+                const logical=await device.size();
+                await device.tap((b.left+b.width/2)*(logical.width/physW||1),(b.top+b.height/2)*(logical.height/physH||1));
+                await wait(700,undefined,{signal});
+              }
+            } catch { note('cleanup','结算页弹层关闭未确认，继续等待结算元素。'); }
+
+            try {
+              nodes=await screen.waitFor(['checkoutStage','point','delivery'],{timeoutMs:25_000});
+            } catch (error) {
+              // 结算页弹层可能在等待过程中才弹出：关掉弹层后重试两次再判定失败。
+              let retried=false;
+              for (let attempt=0;attempt<1 && !retried;attempt++) {
+                const cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
+                const closeBtn=cur.find(n=>/关闭弹层|关闭广告/.test(textOf(n)));
+                if (closeBtn) {
+                  const b=closeBtn.bounds;
+                  const physW=Math.max(...cur.map(n=>n.bounds.left+n.bounds.width),b.left+b.width);
+                  const physH=Math.max(...cur.map(n=>n.bounds.top+n.bounds.height),b.top+b.height);
+                  const logical=await device.size();
+                  await device.tap((b.left+b.width/2)*(logical.width/physW||1),(b.top+b.height/2)*(logical.height/physH||1));
+                  await wait(700,undefined,{signal});
+                } else {
+                  // 没有弹层关闭按钮时不要按返回键：京东里 back 会直接退掉结算页，导致永远等不到结算元素。
+                  break;
+                }
+                try {
+                  nodes=await screen.waitFor(['checkoutStage','point','delivery'],{timeoutMs:12_000});
+                  retried=true;
+                } catch { /* 继续下一轮 */ }
+              }
+              if (!retried) {
+                const current=await screen.nodes(true).catch(()=>[] as UiNode[]);
+                console.error('[diag] settle_wait_failed',(error as Error).message,'nodes',current.length,
+                  'texts',JSON.stringify(current.map(n=>textOf(n)).filter(Boolean).slice(0,30)));
+                throw error;
+              }
+            }
             inCheckout=true;
           } else {
           await screen.tap('add',nodes);
@@ -593,13 +654,40 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             const afterAdd=await screen.nodes();
             emit?.({phase:'cart_surface',state:'succeeded',data:{itemDetail:!!(source.selectors.itemDetail&&screen.selector('itemDetail',afterAdd,false)),selectedSpec:!!screen.selector('selectedSpec',afterAdd,false),cartVisible:!!screen.selector('cart',afterAdd,false),detailDismiss:!!screen.selector('dismissItemDetail',afterAdd,false)}});
             if (screen.selector('dismissItemDetail',afterAdd,false)) await screen.tap('dismissItemDetail',afterAdd);
-            else if(source.selectors.itemDetail&&screen.selector('itemDetail',afterAdd,false)&&screen.selector('add',afterAdd,false))await device.back();
+            /* 不再用 back：京东详情弹层关闭后 back 会退到搜索页，购物车按钮随之消失。 */
             // 点“关闭弹层”偶尔不生效，页面仍在详情页；用返回键兜底一次，避免等购物车控件超时。
             await wait(600,undefined,{signal});
             const left=await screen.nodes().catch(()=>[] as UiNode[]);
-            if (screen.selector('itemDetail',left,false)) { await device.back(); await wait(600,undefined,{signal}); }
+            if (screen.selector('itemDetail',left,false)) { await screen.tap('dismissItemDetail',left).catch(()=>undefined); await wait(600,undefined,{signal}); }
           }
-          nodes=source.selectors.cart ? await screen.waitFor(['cart']) : await screen.waitFor(['cartLine','quantity'],{inCart:true});
+          // 京东加购后详情弹层关闭会回到“店内搜索结果页”，而购物车入口在上层点餐页：按一次 back 回点餐页。
+          {
+            const now=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            if (now.some(n=>/搜秒送|搜索发现/.test(textOf(n)))) {
+              await device.back();
+              await wait(900,undefined,{signal});
+            }
+          }
+          // 加购后先关掉详情弹层，再打开购物车：京东不同门店的购物车入口文案不一致，
+          // 优先用 cartPanel（购物车面板）判定购物车已展开，失败再点 cart 按钮。
+          const openedCart = await screen.waitFor(['cartPanel'],{timeoutMs:6_000}).then(()=>true).catch(()=>false);
+          if (!openedCart) {
+            const cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            console.error('[diag] cart_button_missing nodes',cur.length,'texts',JSON.stringify(cur.map(n=>textOf(n)).filter(Boolean).slice(0,25)));
+          }
+          if (!openedCart && source.selectors.cart) {
+            const cartButton = await screen.waitFor(['cart'],{timeoutMs:6_000}).catch(()=>null);
+            if (cartButton) await screen.tap('cart',cartButton);
+          }
+          nodes=await screen.waitFor(source.selectors.cart ? ['cart','cartPanel','cartLine','quantity'] : ['cartLine','quantity'],{inCart:!source.selectors.cart});
+          // 诊断：购物车作用域里到底有没有 cartLine/quantity，以及购物车弹层是否展开。
+          try {
+            const scoped=screen.cartNodes(nodes,false) ?? [];
+            console.error('[diag] cart_state nodes',nodes.length,'scoped',scoped.length,
+              'cartLine',!!screen.selector('cartLine',scoped,false),'quantity',!!screen.selector('quantity',scoped,false),
+              'cartEmpty',!!screen.selector('cartEmpty',nodes,false),
+              'sample',JSON.stringify(scoped.slice(0,6).map(n=>textOf(n).slice(0,16))));
+          } catch {}
           if (source.selectors.cart) {
             await screen.tap('cart',nodes);
             nodes=await screen.waitFor(['cartLine','quantity'],{inCart:true});
@@ -652,8 +740,16 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           if(couponEntry&&couponAllowed){emit?.({phase:'coupon_checkout',state:'started',data:{policy:context.couponPolicy,reference:task.specified!.couponCheckoutConsent!.reference}});await screen.couponCheckout(nodes);}
           else await screen.tap('checkout',nodes);
           }
-          nodes=await screen.waitFor(['checkoutStage','point','delivery',source.selectors.checkoutLine ? 'checkoutLine' : 'cartLine',
-            source.selectors.checkoutQuantity ? 'checkoutQuantity' : 'quantity']);
+          try {
+            nodes=await screen.waitFor(['checkoutStage','point','delivery',source.selectors.checkoutLine ? 'checkoutLine' : 'cartLine',
+              source.selectors.checkoutQuantity ? 'checkoutQuantity' : 'quantity']);
+          } catch (error) {
+            // 诊断：点“去结算”后结算页没出现时，打印当前页面，区分没跳转 / 元素名不匹配 / 被弹层拦截。
+            const cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            console.error('[diag] checkout_wait_failed',(error as Error).message,'nodes',cur.length,
+              'texts',JSON.stringify(cur.map(n=>textOf(n)).filter(Boolean).slice(0,25)));
+            throw error;
+          }
           const stage = screen.selector('checkoutStage',nodes)!;
           // 诊断：导出结算页完整节点清单，用于定位商品金额/配送费/打包费等字段节点。
           try {
