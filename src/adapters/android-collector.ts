@@ -424,7 +424,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           mark('read4');
           if (!screen.selector('cartEmpty',nodes,false)) throw new CollectionError('cart_not_owned','blocked');
         }
-        if (task.jdOrigin && jd) await jd.findJdMenuItem(screen,store,item,signal);
+        if (task.jdOrigin && jd) await jd.findJdMenuItem(screen,store,item,signal,model);
         else {
           if (source.selectors.category) {
             await screen.tap('category',await screen.waitFor(['category']));
@@ -657,6 +657,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             inCheckout=true;
           } else {
           // “加入购物车”按钮缺失时先打印当前页面，便于区分详情弹层没开/按钮名变了/被弹层遮挡。
+          let visualAdded=false;
           {
             // 详情弹层是异步弹出的：先等 1.5 秒再读，避免刚点完商品就判定缺按钮。
             await wait(1_500,undefined,{signal});
@@ -669,10 +670,28 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             }
             if (!hasAdd) {
               console.error('[diag] add_missing nodes',cur.length,'texts',JSON.stringify(cur.map(n=>textOf(n)).filter(Boolean).slice(0,25)));
+              // 京东商品详情是小程序容器，u2 读不到“加入购物车”：用视觉定位按钮并点击。
+              if (model) {
+                try {
+                  const shot=await device.screenshot(signal);
+                  const [px,py]=await model.locate(attemptId,shot,'页面底部红色的“加入购物车”按钮',signal);
+                  console.error('[diag] add visual hit',Math.round(px),Math.round(py));
+                  await device.tap(px,py);
+                  await wait(2_500,undefined,{signal});
+                  const after=await screen.nodes(true).catch(()=>[] as UiNode[]);
+                  if (screen.selector('cart',after,false)||screen.selector('cartPanel',after,false)) {
+                    console.error('[diag] add visual: cart opened');
+                    nodes=after;
+                  }
+                  // 视觉点击已执行：让流程继续往下走购物车/结算，不要抛错触发外层暂停重试。
+                  nodes=after;
+                  visualAdded=true;
+                } catch(e) { console.error('[diag] add visual failed',String(e).slice(0,100)); }
+              }
               throw new CollectionError('add_control_missing','blocked');
             }
           }
-          await screen.tap('add',nodes);
+          if (!visualAdded) await screen.tap('add',nodes);
           if (source.selectors.dismissItemDetail) {
             const afterAdd=await screen.nodes();
             emit?.({phase:'cart_surface',state:'succeeded',data:{itemDetail:!!(source.selectors.itemDetail&&screen.selector('itemDetail',afterAdd,false)),selectedSpec:!!screen.selector('selectedSpec',afterAdd,false),cartVisible:!!screen.selector('cart',afterAdd,false),detailDismiss:!!screen.selector('dismissItemDetail',afterAdd,false)}});
