@@ -10,7 +10,6 @@ import type { EvidenceStore } from '../infra/evidence.js';
 import type { ModelGateway } from '../infra/model.js';
 import { cropBoxes, flatten, resourceOf, textOf } from './android-page.js';
 import { captureCheckout, verifyCheckout, compactEvidence } from './checkout-reading.js';
-import { guardMainPath } from './page-guard.js';
 import { privacyBandMask } from './checkout-privacy.js';
 import {PAGE_ONTOLOGY_VERSION,mapVersion,executionPages} from '../domain/page-ontology.js';
 export { resourceOf, textOf } from './android-page.js';
@@ -74,13 +73,12 @@ export class ReviewedScreen {
     return own;
   }
   async waitFor(keys: (keyof AndroidSource['selectors'])[], options: {onLaunch?: boolean; availability?: boolean; inCart?: boolean;timeoutMs?:number} = {}) {
-    let offPathStrikes = 0;
     const until=Date.now()+(options.timeoutMs??(this.source.jdShelf?.pilot ? 20_000 : 12_000));
     let launchReadRetried=false;
     for (;;) {
       this.signal.throwIfAborted();
       let nodes: UiNode[] = [];
-      try { nodes=await this.nodes(true); }
+      try { nodes=await this.nodes(); }
       catch(e) {
         if (!(e instanceof CollectionError)) throw e;
         if (e.code==='screen_unreadable' && options.onLaunch && !launchReadRetried && Date.now()<until) {
@@ -90,23 +88,6 @@ export class ReviewedScreen {
       }
       const scope=options.inCart ? this.cartNodes(nodes,false) : nodes;
       if ((scope && keys.every(k=>!!this.selector(k,scope,false))) || (options.availability && this.unavailable(nodes))) return nodes;
-      // 只有“预期元素没出现”时才检查是否已偏离主链路；偏离则立即返回，避免在分享/问卷/支付页空等超时。
-      // 防误杀：dump 在详情页可能读到不完整树（缺“加入购物车”），此时会把详情页判成 unknown 并 back，
-      // 把已打开的商品详情退回搜索页。所以连续两次判定 unknown 才回退，单次先记录诊断。
-      if (nodes.length) {
-        const guard = guardMainPath('jd', nodes.map(n => ({text: textOf(n)})));
-        if (!guard.ok) {
-          offPathStrikes++;
-          console.error('[diag] waitFor: guard_off_path', JSON.stringify({strike: offPathStrikes, kind: guard.kind, nodes: nodes.length,
-            sample: nodes.map(n=>textOf(n)).filter(Boolean).slice(0,10)}));
-          if (offPathStrikes < 2) { await wait(350,undefined,{signal:this.signal}); continue; }
-          await this.device.back();
-          await wait(300,undefined,{signal:this.signal});
-          offPathStrikes = 0;
-          continue;
-        }
-        offPathStrikes = 0;
-      }
       if (Date.now()>=until) throw new CollectionError('page_not_ready');
       await wait(250,undefined,{signal:this.signal});
       this.metrics.waitMs+=250;
@@ -333,11 +314,8 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         // 采集从首页/外卖频道等原生页面开始，用 u2 即时快照；读到 WebView 页面会自动回落到 dump。
         await device.setTreeMode?.('u2').catch(()=>undefined);
         // 手机可能停在门店页/详情页/结算页，复用这些状态会让后续步骤错乱；每次采集强制重启到首页。
-        // 连续高频运行时京东可能被系统弹窗/后台清理顶掉，启动后确认前台，必要时再启动一次。
         await device.launch(true);
         await wait(1_200,undefined,{signal});
-        try { await device.getUITree(); }
-        catch { await device.launch(true); await wait(1_500,undefined,{signal}); }
         stepEnd();
         const query=task.jdOrigin?.brand ?? (source.searchBy==='brand' ? store.brand : store.name);
         const vars = {query,store:store.name,address:store.address,item:item.name,spec:item.spec,quantity:'1',
@@ -364,13 +342,11 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           nodes=verified.nodes;
           shopProof=verified.evidence;
           // 门店页最底部的“满¥30运费¥3”就是配送费（与打包费合并显示），先记下来，结算页没有独立行时用它。
-          if (source.selectors.buyNow) {
-            const pageNodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
-            const freightNode=pageNodes.find(node=>/运费¥?\d+/.test(textOf(node)));
-            const freightMatch=freightNode?/运费¥?(\d+(?:\.\d+)?)/.exec(textOf(freightNode)):null;
-            storeFreightFen=freightMatch?Math.round(Number(freightMatch[1])*100):null;
-            emit?.({phase:'freight_probe',state:'started',data:{nodes:pageNodes.length,found:!!freightNode,text:freightNode?textOf(freightNode).slice(0,24):null,fen:storeFreightFen}});
-          }
+          const pageNodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
+          const freightNode=pageNodes.find(node=>/运费¥?\d+/.test(textOf(node)));
+          const freightMatch=freightNode?/运费¥?(\d+(?:\.\d+)?)/.exec(textOf(freightNode)):null;
+          storeFreightFen=freightMatch?Math.round(Number(freightMatch[1])*100):null;
+          emit?.({phase:'freight_probe',state:'started',data:{nodes:pageNodes.length,found:!!freightNode,text:freightNode?textOf(freightNode).slice(0,24):null,fen:storeFreightFen}});
           await unavailability(nodes);
         } else {
           note('launch','等待指定外卖入口和点位。');
@@ -433,7 +409,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           mark('read4');
           if (!screen.selector('cartEmpty',nodes,false)) throw new CollectionError('cart_not_owned','blocked');
         }
-        if (task.jdOrigin && jd) await jd.findJdMenuItem(screen,store,item,signal,model);
+        if (task.jdOrigin && jd) await jd.findJdMenuItem(screen,store,item,signal);
         else {
           if (source.selectors.category) {
             await screen.tap('category',await screen.waitFor(['category']));
@@ -442,43 +418,15 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           await screen.tap('item',nodes);
         }
         note('variant','核对商品规格、口味和套餐组成。');
-        // 28 号文档：商品详情弹窗是原生渲染，u2 能读规格；dump 在详情页会整次超时。
-        // 12:33 实测确认 u2 服务启停不会改变 Activity（4 次切换 Activity 不变）。
+        // 商品详情弹窗是原生渲染，u2 能读规格；dump 在详情页会整次超时。切不到 u2 就明确失败，不静默回落。
         console.error('[diag] sku_match: switching to u2');
         await screen.device.setTreeMode?.('u2');
-        // L3 状态机：先确认真的在商品详情页（有“加入购物车”），不在就重新点商品卡，而不是在错误页等规格超时。
-        {
-          let probe=await screen.nodes(true).catch(()=>[] as UiNode[]);
-          let inDetail=!!screen.selector('add',probe,false);
-          if (!inDetail) {
-            console.error('[diag] sku_match: not in detail, reopen item nodes',probe.length,
-              'sample',JSON.stringify(probe.map(n=>textOf(n)).filter(Boolean).slice(0,8)));
-            const card=await screen.selector('item',probe,false);
-            if (card) { await screen.tap('item',probe); await wait(1_800,undefined,{signal}); }
-            else { await wait(1_500,undefined,{signal}); }
-            probe=await screen.nodes(true).catch(()=>[] as UiNode[]);
-            inDetail=!!screen.selector('add',probe,false);
-            console.error('[diag] sku_match: reopen result inDetail',inDetail,'nodes',probe.length);
-          }
-        }
         console.error('[diag] sku_match: u2 ready, waiting spec');
-        // 进入详情页后先确认“加入购物车”真的存在；不存在说明商品卡没点开，打印现场便于定位。
-        {
-          const detailNodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
-          const hasAdd=!!screen.selector('add',detailNodes,false);
-          if (!hasAdd) console.error('[diag] sku_match: detail not open nodes',detailNodes.length,
-            'texts',JSON.stringify(detailNodes.map(n=>textOf(n)).filter(Boolean).slice(0,20)));
-        }
-        try{nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,...(task.specified?{timeoutMs:3_000}:{})});}
+        try{nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,...(task.specified?{timeoutMs:6_000}:{})});}
         catch(error){
           // 立即购买模式不依赖规格文字：详情页有“立即购买”按钮即可直接继续。
           if (source.selectors.buyNow) {
             nodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
-            for (let retry=0; retry<2 && !nodes.length; retry++) {
-              await wait(1_000,undefined,{signal});
-              nodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
-            }
-            console.error('[diag] sku_match: 规格等待失败(buyNow 兜底)', (error as Error).message, 'nodes', nodes.length);
             note('variant','立即购买模式：跳过规格文字核对，直接去结算。');
           } else {
           const current=await screen.nodes();
@@ -495,18 +443,14 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           nodes=await screen.waitFor(['selectedSpec'],{availability:true});
           await unavailability(nodes);
         }
-        // 单规格商品（如板烧鸡腿堡）没有“已选 xx”文本，规格选择器必须按可选处理，否则会误报 control_missing。
-        const selected = screen.selector('selectedSpec',nodes,false);
-        if(task.specified && selected){const quantity=/[，,]\s*(\d+)件$/.exec(textOf(selected));if(quantity&&Number(quantity[1])!==1)throw new CollectionError('variant_quantity_mismatch');}
-        const extra = [vars.options ? screen.selector('options',nodes,false) : null,item.kind==='set' ? screen.selector('composition',nodes,false) : null].filter(n=>n!==null);
-        const itemNode = screen.selector(source.selectors.itemDetail ? 'itemDetail' : 'item',nodes,false)
-          ?? nodes.find(n=>/加入购物车|立即购买/.test(textOf(n)))
-          ?? nodes[0];
-        if (!itemNode) throw new CollectionError('control_missing','blocked');
+        const selected = screen.selector('selectedSpec',nodes)!;
+        if(task.specified){const quantity=/[，,]\s*(\d+)件$/.exec(textOf(selected));if(quantity&&Number(quantity[1])!==1)throw new CollectionError('variant_quantity_mismatch');}
+        const extra = [vars.options ? screen.selector('options',nodes)! : null,item.kind==='set' ? screen.selector('composition',nodes)! : null].filter(n=>n!==null);
+        const itemNode = screen.selector(source.selectors.itemDetail ? 'itemDetail' : 'item',nodes)!;
         const displayFields = [screen.field(source.fields.current,nodes),screen.field(source.fields.reference,nodes)];
         stepEnd({state:'succeeded',data:{item:item.name,spec:item.spec,quantity:context.quantity}});
         stepStart('menu_price');
-        const optionFrame = await screen.capture([itemNode,...(selected?[selected]:[]),...extra,...displayFields.flatMap(f=>f?.node ?? [])]);
+        const optionFrame = await screen.capture([itemNode,selected,...extra,...displayFields.flatMap(f=>f?.node ?? [])]);
         const optionProof = await evidenceStore.save(randomUUID(),'menu',optionFrame.image,task.specified?JSON.stringify({item:item.name,spec:item.spec,fields:displayFields.map(f=>f?.raw??null),regions:optionFrame.locations}):[item.name,item.spec,...displayFields.flatMap(f=>f?.raw ?? [])].join('\n'),'live',optionFrame.at);
         if(task.specified) {
           const supply={store,item},target={...context.target,supply,revision:digest(supply)};
@@ -550,9 +494,9 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         };
         if(task.specified){stepEnd({state:'succeeded',evidenceIds:[optionProof.id]});emit?.({phase:'menu_model',state:'started'});menuJob=verifyMenu().catch(()=>{menuPriceReason='menu_model_read_failed';const current=market?.prices.find(p=>p.kind==='display_current');if(current){current.fen=null;current.qualifier='unknown';}emit?.({phase:'menu_model',state:'failed',errorCode:menuPriceReason});});}
         else await verifyMenu();
-        screen.selector('selectedSpec',nodes,false);
-        if (vars.options) screen.selector('options',nodes,false);
-        if (item.kind==='set') screen.selector('composition',nodes,false);
+        screen.selector('selectedSpec',nodes);
+        if (vars.options) screen.selector('options',nodes);
+        if (item.kind==='set') screen.selector('composition',nodes);
         const ownedCart = (n:UiNode[],atCheckout=false) => {
           const scope=atCheckout ? n : screen.cartNodes(n);
           const lineKey=atCheckout && source.selectors.checkoutLine ? 'checkoutLine' : 'cartLine';
@@ -561,12 +505,9 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           if ((resource && scope.filter(node=>resourceOf(node)===resource).length!==1) ||
               (!atCheckout && source.selectors.cartCount && !screen.selector('cartCount',n,false)))
             throw new CollectionError('cart_not_owned','blocked');
-          const lineNode=screen.selector(lineKey,scope,false);
-          const quantityNode=screen.selector(quantityKey,scope,false);
-          if (!lineNode||!quantityNode) return null;
-          const base=[lineNode,quantityNode];
-          if (atCheckout && source.selectors.checkoutSpec) base.push(screen.selector('checkoutSpec',scope,false)!);
-          return base.filter((n): n is UiNode => !!n);
+          const base=[screen.selector(lineKey,scope)!,screen.selector(quantityKey,scope)!];
+          if (atCheckout && source.selectors.checkoutSpec) base.push(screen.selector('checkoutSpec',scope)!);
+          return base;
         };
         const restore = async (fromCheckout: boolean) => {
           // Restore only the verified line created by this attempt. Leave any ambiguous cart for the operator.
@@ -622,188 +563,42 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           note('cart','核对专用购物车与商品份数。');
           stepStart('cart');
           cleanup = 'quarantined';
-          // 幂等前置：加购前先确认购物车没有本次之外的残留，避免失败重试把商品越叠越多。
-          {
-            const preCart=await screen.nodes(true).catch(()=>[] as UiNode[]);
-            const strayCount=screen.selector('cartCount',preCart,false);
-            if (strayCount) {
-              console.error('[diag] cart_add: existing cart residue detected, abort to avoid stacking', textOf(strayCount).slice(0,40));
-              throw new CollectionError('cart_dirty_before_add','blocked');
-            }
-          }
           emit?.({phase:'cart_add_intent',state:'started',data:{item:item.name,spec:item.spec,quantity:1}});
-          // 立即购买按钮在门店页容易点到别的控件（曾跳到搜索页）；强制走“加购 → 去结算”更稳。
-          const buyNowNode=null as UiNode | null;
+          const buyNowNode=source.selectors.buyNow ? screen.selector('buyNow',nodes,false) : null;
           if (buyNowNode) {
             // 用户要求：详情页直接点“立即购买”进结算页，跳过加购与购物车，避免残留商品和弹窗干扰。
             await screen.tap('buyNow',nodes);
             emit?.({phase:'cart_add_intent',state:'succeeded',data:{mode:'buy_now'}});
             cleanup='untouched';
-            // 京东结算页常被优惠券/广告弹层遮挡；优先用配置里的 dismissItemDetail 选择器关闭，
-            // 选择器匹配不到再按文本找“关闭弹层”节点，避免手写坐标。
-            try {
-              for (let i=0;i<3;i++) {
-                const cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
-                if (source.selectors.dismissItemDetail && screen.selector('dismissItemDetail',cur,false)) {
-                  await screen.tap('dismissItemDetail',cur);
-                  await wait(700,undefined,{signal});
-                  continue;
-                }
-                const closeBtn=cur.find(n=>/关闭弹层|关闭广告/.test(textOf(n)));
-                if (!closeBtn) break;
-                const b=closeBtn.bounds;
-                const physW=Math.max(...cur.map(n=>n.bounds.left+n.bounds.width),b.left+b.width);
-                const physH=Math.max(...cur.map(n=>n.bounds.top+n.bounds.height),b.top+b.height);
-                const logical=await device.size();
-                await device.tap((b.left+b.width/2)*(logical.width/physW||1),(b.top+b.height/2)*(logical.height/physH||1));
-                await wait(700,undefined,{signal});
-              }
-            } catch { note('cleanup','结算页弹层关闭未确认，继续等待结算元素。'); }
-
-            try {
-              nodes=await screen.waitFor(['checkoutStage','point','delivery'],{timeoutMs:25_000});
-            } catch (error) {
-              // 结算页弹层可能在等待过程中才弹出：关掉弹层后重试两次再判定失败。
-              let retried=false;
-              for (let attempt=0;attempt<1 && !retried;attempt++) {
-                const cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
-                const closeBtn=cur.find(n=>/关闭弹层|关闭广告/.test(textOf(n)));
-                if (closeBtn) {
-                  const b=closeBtn.bounds;
-                  const physW=Math.max(...cur.map(n=>n.bounds.left+n.bounds.width),b.left+b.width);
-                  const physH=Math.max(...cur.map(n=>n.bounds.top+n.bounds.height),b.top+b.height);
-                  const logical=await device.size();
-                  await device.tap((b.left+b.width/2)*(logical.width/physW||1),(b.top+b.height/2)*(logical.height/physH||1));
-                  await wait(700,undefined,{signal});
-                } else {
-                  // 没有弹层关闭按钮时不要按返回键：京东里 back 会直接退掉结算页，导致永远等不到结算元素。
-                  break;
-                }
-                try {
-                  nodes=await screen.waitFor(['checkoutStage','point','delivery'],{timeoutMs:12_000});
-                  retried=true;
-                } catch { /* 继续下一轮 */ }
-              }
-              if (!retried) {
-                const current=await screen.nodes(true).catch(()=>[] as UiNode[]);
-                console.error('[diag] settle_wait_failed',(error as Error).message,'nodes',current.length,
-                  'texts',JSON.stringify(current.map(n=>textOf(n)).filter(Boolean).slice(0,30)));
-                throw error;
-              }
-            }
+            nodes=await screen.waitFor(['checkoutStage','point','delivery'],{timeoutMs:25_000});
             inCheckout=true;
           } else {
-          // “加入购物车”按钮缺失时先打印当前页面，便于区分详情弹层没开/按钮名变了/被弹层遮挡。
-          let visualAdded=false;
-          {
-            // 详情弹层是异步弹出的：先等 1.5 秒再读，避免刚点完商品就判定缺按钮。
-            await wait(1_500,undefined,{signal});
-            let cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
-            let hasAdd=!!screen.selector('add',cur,false);
-            for (let retry=0; retry<2 && !hasAdd; retry++) {
-              await wait(1_200,undefined,{signal});
-              cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
-              hasAdd=!!screen.selector('add',cur,false);
-            }
-            if (!hasAdd) {
-              console.error('[diag] add_missing nodes',cur.length,'texts',JSON.stringify(cur.map(n=>textOf(n)).filter(Boolean).slice(0,25)));
-              // 京东商品详情是小程序容器，u2 读不到“加入购物车”：用视觉定位按钮并点击。
-              if (model) {
-                try {
-                  const shot=await device.screenshot(signal);
-                  const [px,py]=await model.locate(attemptId,shot,'页面底部红色的“加入购物车”按钮',signal);
-                  console.error('[diag] add visual hit',Math.round(px),Math.round(py));
-                  await device.tap(px,py);
-                  await wait(2_500,undefined,{signal});
-                  const after=await screen.nodes(true).catch(()=>[] as UiNode[]);
-                  if (screen.selector('cart',after,false)||screen.selector('cartPanel',after,false)) {
-                    console.error('[diag] add visual: cart opened');
-                    nodes=after;
-                  }
-                  // 视觉点击已执行：让流程继续往下走购物车/结算，不要抛错触发外层暂停重试。
-                  nodes=after;
-                  visualAdded=true;
-                } catch(e) { console.error('[diag] add visual failed',String(e).slice(0,100)); }
-              }
-              throw new CollectionError('add_control_missing','blocked');
-            }
-          }
-          if (!visualAdded) await screen.tap('add',nodes);
+          await screen.tap('add',nodes);
           if (source.selectors.dismissItemDetail) {
             const afterAdd=await screen.nodes();
             emit?.({phase:'cart_surface',state:'succeeded',data:{itemDetail:!!(source.selectors.itemDetail&&screen.selector('itemDetail',afterAdd,false)),selectedSpec:!!screen.selector('selectedSpec',afterAdd,false),cartVisible:!!screen.selector('cart',afterAdd,false),detailDismiss:!!screen.selector('dismissItemDetail',afterAdd,false)}});
             if (screen.selector('dismissItemDetail',afterAdd,false)) await screen.tap('dismissItemDetail',afterAdd);
-            /* 不再用 back：京东详情弹层关闭后 back 会退到搜索页，购物车按钮随之消失。 */
+            else if(source.selectors.itemDetail&&screen.selector('itemDetail',afterAdd,false)&&screen.selector('add',afterAdd,false))await device.back();
             // 点“关闭弹层”偶尔不生效，页面仍在详情页；用返回键兜底一次，避免等购物车控件超时。
             await wait(600,undefined,{signal});
             const left=await screen.nodes().catch(()=>[] as UiNode[]);
-            if (screen.selector('itemDetail',left,false)) { await screen.tap('dismissItemDetail',left).catch(()=>undefined); await wait(600,undefined,{signal}); }
+            if (screen.selector('itemDetail',left,false)) { await device.back(); await wait(600,undefined,{signal}); }
           }
-          // 京东加购后详情弹层关闭会回到“店内搜索结果页”，而购物车入口在上层点餐页：按一次 back 回点餐页。
-          {
-            const now=await screen.nodes(true).catch(()=>[] as UiNode[]);
-            if (now.some(n=>/搜秒送|搜索发现/.test(textOf(n)))) {
-              await device.back();
-              await wait(900,undefined,{signal});
-            }
-          }
-          // 加购后先关掉详情弹层，再打开购物车：京东不同门店的购物车入口文案不一致，
-          // 优先用 cartPanel（购物车面板）判定购物车已展开，失败再点 cart 按钮。
-          const openedCart = await screen.waitFor(['cartPanel'],{timeoutMs:6_000}).then(()=>true).catch(()=>false);
-          if (!openedCart) {
-            const cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
-            console.error('[diag] cart_button_missing nodes',cur.length,'texts',JSON.stringify(cur.map(n=>textOf(n)).filter(Boolean).slice(0,25)));
-          }
-          if (!openedCart && source.selectors.cart) {
-            // 购物车按钮文案不稳定（可能缺“（N件商品）按钮”后缀），直接按文本前缀找节点再点。
-            const cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
-            const btn=cur.find(n=>/店铺购物车/.test(textOf(n)) && n.bounds.width>0 && n.bounds.height>0);
-            if (btn) {
-              const b=btn.bounds;
-              const logical=await device.size();
-              const physW=Math.max(...cur.map(n=>n.bounds.left+n.bounds.width));
-              const physH=Math.max(...cur.map(n=>n.bounds.top+n.bounds.height));
-              await device.tap((b.left+b.width/2)*(logical.width/physW||1),(b.top+b.height/2)*(logical.height/physH||1));
-              await wait(1_000,undefined,{signal});
-            }
-          }
-          // 加购已在 cart_surface 阶段确认（详情页点过“加入购物车”）。京东购物车入口文案/节点不稳定，
-          // 读不到购物车控件不应该判整次失败：记录诊断后继续，让后续结算流程用视觉找“去结算”。
-          try {
-            nodes=await screen.waitFor(source.selectors.cart ? ['cart','cartPanel','cartLine','quantity'] : ['cartLine','quantity'],{inCart:!source.selectors.cart});
-          } catch (error) {
-            console.error('[diag] cart_surface read failed, continue to checkout:', (error as Error).message);
-            emit?.({phase:'cart_surface',state:'succeeded',data:{fallback:'cart_ui_unreadable_but_add_confirmed'}});
-            nodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
-          }
-          // 诊断：购物车作用域里到底有没有 cartLine/quantity，以及购物车弹层是否展开。
-          try {
-            const scoped=screen.cartNodes(nodes,false) ?? [];
-            console.error('[diag] cart_state nodes',nodes.length,'scoped',scoped.length,
-              'cartLine',!!screen.selector('cartLine',scoped,false),'quantity',!!screen.selector('quantity',scoped,false),
-              'cartEmpty',!!screen.selector('cartEmpty',nodes,false),
-              'sample',JSON.stringify(scoped.slice(0,6).map(n=>textOf(n).slice(0,16))));
-          } catch {}
+          nodes=source.selectors.cart ? await screen.waitFor(['cart']) : await screen.waitFor(['cartLine','quantity'],{inCart:true});
           if (source.selectors.cart) {
-            // 购物车入口节点可能读不到（小程序 WebView）；点不到就跳过，不判整次失败。
-            if (screen.selector('cart',nodes,false)) {
-              await screen.tap('cart',nodes);
-            }
-            try { nodes=await screen.waitFor(['cartLine','quantity'],{inCart:true}); }
-            catch (error) { console.error('[diag] cart line wait failed, continue to checkout:', (error as Error).message); }
+            await screen.tap('cart',nodes);
+            nodes=await screen.waitFor(['cartLine','quantity'],{inCart:true});
           }
           for (let i=1;i<context.quantity;i++) {
-            if (!ownedCart(nodes)) break;
+            ownedCart(nodes);
             await screen.tap('increase',screen.cartNodes(nodes));
             vars.quantity=String(i+1);
             nodes=await screen.waitFor(['cartLine','quantity'],{inCart:true});
           }
-          const ownedLine = ownedCart(nodes);
-          const cartLine = ownedLine?.[0] ?? null;
-          const quantityNode = ownedLine?.[1] ?? null;
+          const [cartLine,quantityNode] = ownedCart(nodes) as [UiNode,UiNode];
           emit?.({phase:'cart_add_intent',state:'succeeded',data:{quantity:context.quantity}});
-          const cartFrame = await screen.capture([cartLine,quantityNode].filter((n): n is UiNode => !!n));
-          cartProof = await evidenceStore.save(randomUUID(),'cart',cartFrame.image,[cartLine,quantityNode].filter((n): n is UiNode => !!n).map(textOf).join('\n'),'live',cartFrame.at);
+          const cartFrame = await screen.capture([cartLine,quantityNode]);
+          cartProof = await evidenceStore.save(randomUUID(),'cart',cartFrame.image,[cartLine,quantityNode].map(textOf).join('\n'),'live',cartFrame.at);
           stepEnd({state:'succeeded',data:{quantity:context.quantity},evidenceIds:cartProof?[cartProof.id]:[]});
           }
           stepStart('checkout');
@@ -842,16 +637,8 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           if(couponEntry&&couponAllowed){emit?.({phase:'coupon_checkout',state:'started',data:{policy:context.couponPolicy,reference:task.specified!.couponCheckoutConsent!.reference}});await screen.couponCheckout(nodes);}
           else await screen.tap('checkout',nodes);
           }
-          try {
-            nodes=await screen.waitFor(['checkoutStage','point','delivery',source.selectors.checkoutLine ? 'checkoutLine' : 'cartLine',
-              source.selectors.checkoutQuantity ? 'checkoutQuantity' : 'quantity']);
-          } catch (error) {
-            // 诊断：点“去结算”后结算页没出现时，打印当前页面，区分没跳转 / 元素名不匹配 / 被弹层拦截。
-            const cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
-            console.error('[diag] checkout_wait_failed',(error as Error).message,'nodes',cur.length,
-              'texts',JSON.stringify(cur.map(n=>textOf(n)).filter(Boolean).slice(0,25)));
-            throw error;
-          }
+          nodes=await screen.waitFor(['checkoutStage','point','delivery',source.selectors.checkoutLine ? 'checkoutLine' : 'cartLine',
+            source.selectors.checkoutQuantity ? 'checkoutQuantity' : 'quantity']);
           const stage = screen.selector('checkoutStage',nodes)!;
           // 诊断：导出结算页完整节点清单，用于定位商品金额/配送费/打包费等字段节点。
           try {
@@ -862,12 +649,12 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           screen.selector('point',nodes);
           screen.selector('delivery',nodes);
           await unavailability(nodes);
-          const checkoutItems=ownedCart(nodes,true) ?? [];
+          const checkoutItems=ownedCart(nodes,true);
           if(couponEntry&&couponAllowed)emit?.({phase:'coupon_checkout',state:'succeeded',data:{policy:context.couponPolicy,action:'已点击领券结算，实际抵扣以结算证据为准'}});
           if(task.specified) {
             const captured=await captureCheckout(screen,nodes,checkoutItems,evidenceStore,signal,[shopProof.id,optionProof.id,cartProof?.id??""]);
             // 结算页费用明细可能在首屏下方：滚动一次读取运费/打包费（用户确认结算页有运费显示）。
-            if (source.selectors.buyNow) try {
+            try {
               const viewport=await screen.device.size();
               await screen.device.swipe?.({x:viewport.width/2,y:viewport.height*.78},{x:viewport.width/2,y:viewport.height*.32},signal);
               await wait(700,undefined,{signal});
@@ -885,12 +672,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
               const component=(value:{fen:number;raw:string}|null):MoneyComponent=>value?{amount_fen:value.fen,raw_value:value.raw,basis:'separately_displayed',included_in:'checkout_payable'}:
                 {amount_fen:null,raw_value:null,basis:'unknown',included_in:null};
               // 门店页底部的“运费”与打包费在京东外卖合并展示；结算页没有独立行时用门店页读到的运费补上。
-              // 门店页/结算页都没显示运费时（部分门店免运费或页面未展示），按“应付-(商品金额-优惠)”倒推，标注为推算值。
-              const inferredFreight=(storeFreightFen===null&&read.total!==null&&read.components.subtotal)
-                ?Math.max(0,read.total-(read.components.subtotal.fen-(read.components.discount?.fen??0)))
-                :null;
-              const freightFallback=storeFreightFen!==null?{fen:storeFreightFen,raw:(storeFreightFen/100).toFixed(2)}
-                :(inferredFreight!==null?{fen:inferredFreight,raw:(inferredFreight/100).toFixed(2)}:null);
+              const freightFallback=storeFreightFen!==null?{fen:storeFreightFen,raw:(storeFreightFen/100).toFixed(2)}:null;
               const deliveryValue=read.components.delivery??freightFallback;
               const packagingValue=read.components.packaging??freightFallback;
               const complete=deliveryValue!==null&&packagingValue!==null;
@@ -914,26 +696,14 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           const couponData = couponRows.map(row=>Object.fromEntries(couponFields.map(([k,v])=>[k,screen.field(v,row)]))).filter(row=>row.couponName);
           const payable = fields.payable;
           if (!payable) throw new CollectionError('checkout_amount_missing');
-          const frame = await screen.capture([stage,...(checkoutItems??[]),...Object.entries(fields).flatMap(([k,v])=>v && k!=='current' && k!=='reference' ? [v.node] : []),
+          const frame = await screen.capture([stage,...checkoutItems,...Object.entries(fields).flatMap(([k,v])=>v && k!=='current' && k!=='reference' ? [v.node] : []),
             ...couponData.flatMap(row=>Object.values(row).flatMap(v=>v?.node ?? []))]);
           evidence = await evidenceStore.save(randomUUID(),'checkout',frame.image,
             JSON.stringify({fields:Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v?.raw ?? null])),coupons:couponData.map(row=>Object.fromEntries(Object.entries(row).map(([k,v])=>[k,v?.raw ?? null]))),contextProof:[shopProof.id,optionProof.id,cartProof?.id??""]}),'live',frame.at);
           stepEnd({state:'succeeded',evidenceIds:[evidence.id]});
           stepStart('model_verify');
           const result = await model.json(attemptId,'checkout_read','读取截图中结算应付金额的原文，只返回 { "payable": "金额原文" }，未显示则为 null。',{field:source.fields.payable.prefix},priceCheck,{image:frame.image,signal,evidenceIds:[evidence.id]});
-          // 美团结算页显示“券前价”，红包需点击后才抵扣，实付 = 券前价 − 可用红包；京东等其他平台无此口径。
-          let total = parseCny(payable.raw);
-          if (platform === 'meituan' && source.fields.couponBefore) {
-            const beforeRaw = screen.field(source.fields.couponBefore, nodes)?.raw;
-            const beforeFen = beforeRaw ? parseCny(beforeRaw) : null;
-            const couponText = source.fields.discount ? screen.field(source.fields.discount, nodes)?.raw ?? '' : '';
-            const couponMatch = /(\d+(?:\.\d+)?)\s*元/.exec(couponText);
-            const couponFen = couponMatch ? Math.round(Number(couponMatch[1]) * 100) : 0;
-            if (beforeFen !== null) {
-              total = beforeFen - couponFen;
-              emit?.({phase:'meituan_coupon',state:'succeeded',data:{before:beforeFen,coupon:couponFen,actual:total}});
-            }
-          }
+          const total = parseCny(payable.raw);
           const modelFen=moneyReading(result.payable);
           if (modelFen!==total) {
             stepEnd({state:'failed',errorCode:'amount_evidence_mismatch',data:{structuralFen:total,modelFen},evidenceIds:[evidence.id]});
@@ -992,7 +762,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             stepStart('restore');
             const restoreStarted=Date.now();
             try {
-              if (cleanup==='untouched' && inCheckout && source.selectors.buyNow) {
+              if (cleanup==='untouched' && inCheckout) {
                 // 立即购买不修改购物车；退一步离开结算页即可，省掉约 20 秒清空与回菜单流程。
                 await screen.device.back();
                 await wait(500,undefined,{signal});
@@ -1001,9 +771,8 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
                 stepEnd({state:'succeeded',data:{cleanup},evidenceIds:emptyProof?[emptyProof.id]:[]});
               }
             } catch (error) {
-              cleanup = 'needs_attention';
               stepEnd({state:'failed',errorCode:'cleanup_failed',data:{cleanup,reason:error instanceof CollectionError ? error.code : null}});
-              note('cleanup','购物车状态需人工核对（cleanup=needs_attention）；下次采集前必须确认购物车为空，否则会持续累积商品。');
+              note('cleanup','购物车状态需人工核对，已暂停对应设备及账号。');
             }
             screen.metrics.cleanupMs=Date.now()-restoreStarted;
           }

@@ -110,11 +110,22 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   // 首页特征：用最稳的两个标志——美团自营“小象超市”入口 + 顶部“搜索”按钮。
   // 不依赖“团购/推荐”这类会随滚动、活动位、文案改版而消失的节点。
   const isHome = async () => {
+    // 首页判定再看 Activity：美团新版首页是 MainActivity，比文本特征稳。
+    try {
+      const {execFile} = await import('node:child_process');
+      const {promisify} = await import('node:util');
+      const run = promisify(execFile);
+      const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+      const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+      const {stdout} = await run(adb, ['-s', serial, 'shell', 'dumpsys window | grep mCurrentFocus'], {timeout: 8_000, encoding: 'utf8'});
+      if (/com\.sankuai\.meituan\/[^\s]*MainActivity/.test(stdout)) return true;
+    } catch { /* 回落文本判定 */ }
     const nodes = await semantic.read();
     const labels = nodes.map(n => nodeLabel(n).trim());
     const has = (needle: string) => labels.some(l => l.includes(needle));
-    const ok = has('小象超市') && has('搜索');
-    if (!ok) console.log('[meituan] isHome=false', JSON.stringify({小象超市:has('小象超市'),搜索:has('搜索'),sample:labels.slice(0,8)}));
+    // 放宽：有顶部搜索入口 + 任一首页特征即可（不再强制“小象超市”，新版首页已无该入口）。
+    const ok = has('搜索') && (has('小象超市') || has('外卖') || has('团购') || has('推荐'));
+    if (!ok) console.log('[meituan] isHome=false', JSON.stringify({搜索:has('搜索'),外卖:has('外卖'),团购:has('团购'),sample:labels.slice(0,8)}));
     return ok;
   };
   // 回首页：先在 App 内返回重试；若已被退到桌面（读不到美团任何节点），重新打开 App（不 force-stop、不清数据）。
@@ -128,6 +139,18 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     if (!inApp && options.reopenApp) await options.reopenApp();
     await semantic.waitStable(6);
   }
+  if (!(await isHome())) {
+    // 起点不对绝不在错误页面上继续：强制回到美团首页 Activity 后重校验。
+    try {
+      const {execFile} = await import('node:child_process');
+      const {promisify} = await import('node:util');
+      const run = promisify(execFile);
+      const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+      const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+      await run(adb, ['-s', serial, 'shell', 'am', 'start', '-n', 'com.sankuai.meituan/com.meituan.android.pt.homepage.activity.MainActivity'], {timeout: 15_000, encoding: 'utf8'}).catch(() => null);
+      await semantic.waitStable(8);
+    } catch { /* ignore */ }
+  }
   if (!(await isHome())) throw new Error('meituan_not_home');
 
   step('首页搜索按钮');
@@ -140,7 +163,21 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   // 层级 2：精确匹配历史词；层级 3：包含匹配。
   const inResultPage = async () => {
     const ns = await semantic.waitStable(6);
-    return ns.some(n => /综合排序|销量|筛选|全部/.test(nodeLabel(n)));
+    const labels = ns.map(n => nodeLabel(n));
+    // 硬证据：结果页必须出现目标品牌（搜索“麦当劳”的结果页一定有“麦当劳”文本）。
+    // 之前放宽到“外卖/评分”会把“猜你想搜”推荐页误判成结果页（实测推荐页只有肯德基/必胜客）。
+    const hasBrand = labels.some(l => l.includes(brand));
+    const hasStoreHint = labels.some(l => /评分|月售|起送|配送费|综合排序/.test(l));
+    if (hasBrand && hasStoreHint) return true;
+    try {
+      const {execFile} = await import('node:child_process');
+      const {promisify} = await import('node:util');
+      const run = promisify(execFile);
+      const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+      const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+      const {stdout} = await run(adb, ['-s', serial, 'shell', 'dumpsys window | grep mCurrentFocus'], {timeout: 8_000, encoding: 'utf8'});
+      return /SearchResultActivity/.test(stdout) && hasBrand;
+    } catch { return false; }
   };
   let searched = false;
   if (options.searchText) {
@@ -174,9 +211,11 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   };
   let enteredStore = false;
   for (let attempt = 0; attempt < 2 && !enteredStore; attempt++) {
+    // 放宽语义层级：不再强制要求“麦咖啡”（不是所有门店名都带这个），
+    // 只要含品牌名且带评分/配送/起送这类门店卡特征即可命中，减少对视觉兜底的依赖。
     const storeCardExact = await semantic.find(
-      n => nodeLabel(n).includes(brand) && nodeLabel(n).includes('麦咖啡') && /分|评分|配送|起送|\d\.\d/.test(nodeLabel(n)),
-      6_000,
+      n => nodeLabel(n).includes(brand) && /分|评分|配送|起送|\d\.\d|月售/.test(nodeLabel(n)),
+      8_000,
     );
     if (storeCardExact) {
       await semantic.tap(storeCardExact, '门店卡(语义)');

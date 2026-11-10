@@ -82,9 +82,41 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
   const sleep = options.sleep;
   let physical: { width: number; height: number } | null = null;
 
-  const read = async (): Promise<U2Node[]> => {
-    // u2 服务在这台设备上读到第 2 次就崩（curl 也从 200 变 000），不可作为稳定通道。
-    // 改用系统 uiautomator dump：走系统无障碍服务，不依赖 u2 常驻进程；实测美团首页 2.7 秒、32KB XML、文本完整。
+  // 读屏策略（依据 13:41 取证）：美团新版 MRNX 容器页面持续动画，uiautomator dump 会报
+  // “could not get idle state” 读不到；u2 反而能读（u2 read ok true）。所以 u2 优先，dump 兜底。
+  let u2Reader: any = null;
+  const readU2 = async (): Promise<U2Node[] | null> => {
+    try {
+      if (!u2Reader) {
+        const {AndroidUiTreeReader} = await import('./android-uitree.js');
+        u2Reader = await AndroidUiTreeReader.create({
+          serial: process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133',
+          adbPath: process.env.MIDSCENE_ADB_PATH ?? 'adb',
+        });
+      }
+      const tree = await u2Reader.read() as any;
+      const root = tree?.root;
+      if (!root) return null;
+      // UiNode{caption?, attrs, bounds, children} → U2Node{label,x,y,w,h}（与 parseU2Xml 输出结构对齐）
+      const out: U2Node[] = [];
+      const walk = (n: any, depth: number) => {
+        if (depth > 60) return;
+        const text = String(n?.attrs?.text ?? '').trim();
+        const desc = String(n?.attrs?.['content-desc'] ?? '').trim();
+        const b = n?.bounds ?? {};
+        if (text || desc) out.push({
+          text, desc,
+          cls: String(n?.attrs?.class ?? ''),
+          rid: String(n?.attrs?.resourceId ?? ''),
+          left: b.left ?? 0, top: b.top ?? 0, width: b.width ?? 0, height: b.height ?? 0,
+        } as any);
+        (n?.children ?? []).forEach((c: any) => walk(c, depth + 1));
+      };
+      walk(root, 0);
+      return out.length ? out : null;
+    } catch { return null; }
+  };
+  const readDump = async (): Promise<U2Node[]> => {
     const {execFile} = await import('node:child_process');
     const {promisify} = await import('node:util');
     const run = promisify(execFile);
@@ -94,6 +126,11 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
     await run(adb, ['-s', serial, 'shell', `uiautomator dump --compressed ${remote}`], {timeout: 12_000, encoding: 'utf8'}).catch(() => null);
     const {stdout} = await run(adb, ['-s', serial, 'shell', `cat ${remote}`], {timeout: 12_000, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
     return parseU2Xml(stdout ?? '');
+  };
+  const read = async (): Promise<U2Node[]> => {
+    const viaU2 = await readU2();
+    if (viaU2 && viaU2.length > 0) return viaU2;
+    return readDump();
   };
 
   const waitStable = async (rounds = 8): Promise<U2Node[]> => {

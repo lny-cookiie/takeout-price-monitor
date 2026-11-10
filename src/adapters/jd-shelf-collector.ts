@@ -90,11 +90,8 @@ async function waitFor<T>(screen:ReviewedScreen,signal:AbortSignal,select:(nodes
 async function tapNode(screen:ReviewedScreen,node:UiNode,signal:AbortSignal) {
   if (node.attrs.package!==screen.source.package || node.attrs.enabled==='false' || unsafeTap.test(textOf(node)))
     throw new CollectionError('action_not_allowed','blocked');
-  const {left,top,width,height}=node.bounds;
-  let x=left+width/2,y=top+height/2;
+  const {left,top,width,height}=node.bounds, x=left+width/2,y=top+height/2;
   const size=await screen.device.size();
-  // u2 树的 bounds 是逻辑 dp，device.tap 走物理像素：bounds 明显小于屏幕尺寸时按比例换算。
-  if (x<size.width/2 && size.width>=800) { x=x*size.width/373; y=y*size.height/843; }
   if (x<=0 || y<=0 || x>=size.width || y>=size.height) throw new CollectionError('invalid_control_bounds');
   signal.throwIfAborted();
   await screen.device.tap(x,y);
@@ -662,7 +659,7 @@ async function scanMenu(screen:ReviewedScreen,cal:JdShelfCalibration,store:Suppl
   return {items:[...rows.values()],coverage,scannedCount:rows.size+unreadableCount,stopReason,pageCount,unreadableCount};
 }
 
-export async function findJdMenuItem(screen:ReviewedScreen,store:Supply['store'],target:Supply['item'],signal:AbortSignal,model?:Pick<ModelGateway,'locate'>):Promise<void> {
+export async function findJdMenuItem(screen:ReviewedScreen,store:Supply['store'],target:Supply['item'],signal:AbortSignal):Promise<void> {
   console.error('[diag] findJdMenuItem enter, menuSearch=',!!screen.source.selectors.menuSearch,'piloted=',!!screen.source.jdShelf?.pilot);
   const cal=screen.source.jdShelf;
   if (!cal || target.kind!=='single' || !target.spec || target.options===null) throw new CollectionError('variant_controls_unverified','blocked');
@@ -670,9 +667,6 @@ export async function findJdMenuItem(screen:ReviewedScreen,store:Supply['store']
   if (cal.pilot && screen.source.selectors.menuSearch) {
     try {
       console.error('[diag] store-search: start');
-      // 京东店内搜索是“京东门详小程序”，u2 树读不到商品文本（全空），切 dump 模式才能读到。
-      await screen.device.setTreeMode?.('dump').catch(()=>undefined);
-      await new Promise(r=>setTimeout(r,600));
       const entry=await screen.waitFor(['menuSearch'],{timeoutMs:6_000});
       await screen.tap('menuSearch',entry);
       await wait(800,undefined,{signal});
@@ -684,43 +678,17 @@ export async function findJdMenuItem(screen:ReviewedScreen,store:Supply['store']
       const pool=results.filter(node=>{
         const label=normalizeKey(textOf(node));
         if (!(node.bounds.width>0&&node.bounds.height>0)) return false;
-        // 搜索框/标题栏里的同名文字也会命中（top 很小、宽度很窄），必须排除，只认商品卡。
-        if (node.bounds.top<80 || node.bounds.width<60) return false;
         if (/(套餐|三件套|四件套|双人餐|多人餐|组合|欢乐送|家庭餐)/.test(label)) return false;
         return label.includes(targetKey);
       });
       const exact=pool.find(node=>normalizeKey(textOf(node)).split(/[，,]/)[0]===targetKey);
       const hit=exact??pool.sort((a,b)=>b.bounds.top-a.bounds.top)[0];
       console.error('[diag] store-search: results',results.length,'pool',pool.length,'exact',!!exact,'hit',!!hit);
-      console.error('[diag] store-search: sample',JSON.stringify(results.slice(0,8).map(n=>({t:textOf(n).slice(0,16),top:n.bounds.top,w:n.bounds.width}))));
-      if (!hit && model) {
-        // 京东店内搜索是小程序容器，u2/dump 都读不到商品文本：用视觉定位商品卡。
-        try {
-          for (const hint of [`店内搜索结果里“${target.name}”这行商品名称的文字位置`, `店内搜索结果里“${target.name}”的商品图片`]) {
-            const shot=await screen.device.screenshot(signal);
-            const [px,py]=await model.locate('jd_store_search',shot,hint,signal);
-            console.error('[diag] store-search: visual hit',hint.slice(0,20),Math.round(px),Math.round(py));
-            await screen.device.tap(px,py);
-            await new Promise(r=>setTimeout(r,5_000));
-            await screen.device.setTreeMode?.('u2').catch(()=>undefined);
-            // 商品详情是小程序容器，u2 读不到“加入购物车”，不能拿它当“是否打开”的判据；
-            // 点一次后直接返回，让后续 sku_match 在详情页继续（它自己会兜底）。
-            console.error('[diag] store-search: visual tapped (no u2 verification)');
-            return;
-          }
-        } catch (e) { console.error('[diag] store-search: visual fallback failed',String(e).slice(0,120)); }
-      }
       if (hit) {
-        console.error('[diag] store-search: hit text',JSON.stringify(textOf(hit).slice(0,30)),'bounds',JSON.stringify(hit.bounds));
         await tapNode(screen,hit,signal);
         // 商品详情弹窗是原生渲染，u2 能读规格与加入购物车。
         await screen.device.setTreeMode?.('u2').catch((e)=>console.error('[diag] store-search: u2 switch failed',String(e).slice(0,100)));
         await wait(800,undefined,{signal});
-        // 点击后校验详情弹窗是否真的打开：后续 sku_match 找不到 spec/add 时会报 control_missing。
-        const after=await screen.nodes(true).catch(()=>[] as UiNode[]);
-        const texts=after.map(n=>textOf(n)).filter(Boolean);
-        const hasDetail=/加入购物车|立即购买|选规格|已选/.test(texts.join(' '));
-        console.error('[diag] store-search: after tap nodes',after.length,'detail',hasDetail,'sample',JSON.stringify(texts.slice(0,10)));
         return;
       }
     } catch (e) { console.error('[diag] store-search failed',String(e).slice(0,140)); }

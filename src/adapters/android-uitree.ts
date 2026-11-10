@@ -224,13 +224,7 @@ export class AndroidUiTreeReader {
         await this.ensureJar();
         // EMUI 等系统在后台限制下偶尔会拉起失败，重试一次；仍失败则报错并附进程诊断。
         for (let attempt = 1; attempt <= 2; attempt++) {
-          // 必须让 app_process 脱离 adb shell 的会话：直接 `nohup sh -c '...' &` 时 app_process 是 sh 的子进程，
-          // adb shell 退出后 sh 被回收，app_process 跟着死，下一个脚本就连不上 9008（今天反复出现的根因）。
-          // 用子 shell + 全重定向 + setsid(若可用) 让进程被 init 收养。
-          const command = `(setsid sh -c 'CLASSPATH=${this.remoteJarPath} exec app_process / com.wetest.uia2.Main -p ${this.port}' </dev/null >/dev/null 2>&1 &)`;
-          await this.adb(['shell', command], 8000).catch(() => '');
-          // setsid 不存在时回退到普通子 shell 形式
-          await this.adb(['shell', `(CLASSPATH=${this.remoteJarPath} app_process / com.wetest.uia2.Main -p ${this.port} </dev/null >/dev/null 2>&1 &)`], 8000).catch(() => '');
+          const command = `nohup sh -c 'CLASSPATH=${this.remoteJarPath} app_process / com.wetest.uia2.Main -p ${this.port}' >/dev/null 2>&1 &`;
           await this.adb(['shell', command], 8000).catch(() => '');
           const deadline = Date.now() + this.startTimeoutMs;
           while (Date.now() < deadline) {
