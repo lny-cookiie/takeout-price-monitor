@@ -33,10 +33,12 @@ const pick = (nodes: U2Node[], needle: string): U2Node | null =>
 /** 读取结算页各费用行：美团把标签和金额放在不同节点，按纵向位置配对。 */
 export function readMeituanSettlement(nodes: U2Node[]): Partial<MeituanQuote> & { raw: Record<string, string> } {
   const raw: Record<string, string> = {};
+  const hitLeft = new Map<{y:number;label:string}, number>();
   const rows = nodes
     .filter(n => nodeLabel(n))
-    .map(n => ({ y: n.top + n.height / 2, label: nodeLabel(n) }))
+    .map(n => ({ y: n.top + n.height / 2, label: nodeLabel(n), left: n.left }))
     .sort((a, b) => a.y - b.y);
+  for (const r of rows) hitLeft.set(r, r.left ?? 0);
   const valueNear = (label: string, tolerance = 40): string => {
     const hit = rows.find(r => r.label.includes(label));
     if (!hit) return '';
@@ -48,9 +50,23 @@ export function readMeituanSettlement(nodes: U2Node[]): Partial<MeituanQuote> & 
       const num = t.replace(/[¥￥元\s]/g, '');
       return /\d{2,}/.test(num) || /\.\d+/.test(num);
     };
+    // 金额配对要同时考虑纵向和横向：标签在左，金额在其右侧同一行附近。
+    // 只按纵距离会在“券前/一单回本/两单回本”这种密集区域选错（曾把会员卡价格 ¥60 当成券前价）。
+    const hitX = rows.find(r => r.label.includes(label)) as any;
+    const tagLeft = hitLeft.get(hit) ?? 0;
     const candidate = rows
       .filter(r => Math.abs(r.y - hit.y) <= tolerance && r !== hit && isAmount(r.label))
-      .sort((a, b) => Math.abs(a.y - hit.y) - Math.abs(b.y - hit.y))[0];
+      .sort((a, b) => {
+        const la = hitLeft.get(a) ?? 0, lb = hitLeft.get(b) ?? 0;
+        // 优先右侧同行的金额，且横向距离越近越好
+        const dxA = la >= tagLeft ? la - tagLeft : 9999;
+        const dxB = lb >= tagLeft ? lb - tagLeft : 9999;
+        const dyA = Math.abs(a.y - hit.y), dyB = Math.abs(b.y - hit.y);
+        if (dxA < 200 && dxB >= 200) return -1;
+        if (dxB < 200 && dxA >= 200) return 1;
+        const scoreA = dxA + dyA * 2, scoreB = dxB + dyB * 2;
+        return scoreA - scoreB;
+      })[0];
     return candidate ? candidate.label : '';
   };
   const fields = ['商品原价', '打包费', '用户配送费', '红包', '立减', '券前', '实付', '合计'];
@@ -134,9 +150,11 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     const run = promisify(execFile);
     const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
     const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
-    await run(adb, ['-s', serial, 'shell', 'am', 'start', '-n',
+    // -S 先 force-stop 再启动：单纯 am start 不会清栈，会停在上一轮的门店页/结算页。
+    // 注意：这里 force-stop 是重启 App 回到首页，不是清数据，符合“点错返回上一页”的约束边界。
+    await run(adb, ['-s', serial, 'shell', 'am', 'start', '-S', '-n',
       'com.sankuai.meituan/com.meituan.android.pt.homepage.activity.MainActivity'],
-      {timeout: 15_000, encoding: 'utf8'}).catch(() => null);
+      {timeout: 20_000, encoding: 'utf8'}).catch(() => null);
     await semantic.waitStable(8);
   };
   for (let i = 0; i < 3 && !(await isHome()); i++) {
@@ -188,8 +206,20 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   const inResultPage = async () => {
     const ns = await semantic.waitStable(6);
     const labels = ns.map(n => nodeLabel(n));
-    // 外卖频道的搜索结果页未必有“综合排序/全部”，放宽到门店卡特征（评分/月售/起送/距离）。
-    return labels.some(l => /综合排序|销量|筛选|评分|月售|起送|配送|\d+(\.\d+)?km|\d+m/.test(l));
+    // 关键：首页推荐流也有“月售/评分”，不能靠这些词判定结果页。
+    // 结果页的硬特征是 Activity=SearchResultActivity，或顶部搜索框里带着刚搜的品牌名。
+    try {
+      const {execFile} = await import('node:child_process');
+      const {promisify} = await import('node:util');
+      const run = promisify(execFile);
+      const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+      const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+      const {stdout} = await run(adb, ['-s', serial, 'shell', 'dumpsys window | grep mCurrentFocus'], {timeout: 8_000, encoding: 'utf8'});
+      if (/SearchResultActivity|search\.result/i.test(String(stdout))) return true;
+    } catch { /* 落到文本判据 */ }
+    // 文本兜底：搜索框节点里同时含品牌名和“搜索”提示，说明这是结果页顶栏。
+    return labels.some(l => l.includes(brand) && /搜索框|点击可搜索/.test(l))
+      && labels.some(l => /综合排序|筛选|销量最高|距离最近/.test(l));
   };
   let searched = false;
   if (options.searchText) {
@@ -261,7 +291,29 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     throw new Error('meituan_store_card_needs_visual');
   }
 
-  await asserter.ensure('store');
+  // 进店校验：只要求 Activity 离开结果页/搜索页（页面确实跳转了）。
+  // 不能用 ensure('store')：美团门店页是 MRNStandardActivity，读屏读不到节点，会被误判成偏离并 back 退出来。
+  {
+    const {execFile} = await import('node:child_process');
+    const {promisify} = await import('node:util');
+    const run = promisify(execFile);
+    const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+    const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+    let entered = false;
+    for (let i = 0; i < 8 && !entered; i++) {
+      const {stdout} = await run(adb, ['-s', serial, 'shell', 'dumpsys window | grep mCurrentFocus'],
+        {timeout: 8_000, encoding: 'utf8'}).catch(() => ({stdout: ''}));
+      const act = String(stdout);
+      if (!/SearchResultActivity|search\.result|search\.home\.SearchActivity/i.test(act)) {
+        // 已经不在结果页/搜索页 → 视为进店成功
+        const m = /\s([\w.]+\/[\w.$]+)\}/.exec(act);
+        const now = m ? m[1]! : '';
+        if (now && !/homepage\.activity\.MainActivity/i.test(now)) { entered = true; console.log('[meituan] 已进店 activity=' + now.slice(0, 70)); }
+      }
+      await sleep(700);
+    }
+    if (!entered) throw new Error('meituan_store_not_entered');
+  }
   step('门店页搜索图标');
   // 美团门店页有两种容器：WMRestaurantActivity 的“搜索”可语义读取，MRNStandardActivity 读不到，需要视觉兜底。
   // 点击后必须进入店内搜索页（出现“请输入商品名”或“热门搜索”）；否则返回重试，避免点成分享/收藏后一路错下去。
@@ -328,7 +380,8 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   }
   if (!itemTapped) throw new Error('meituan_no_item');
 
-  await asserter.ensure('item');
+  // 单品详情是 MPTranslucentActivity（半透明弹层），同样不能用页面身份断言去否决。
+  // 加购步骤自身有宽松校验（找到“加入购物车”或无按钮但出现“去结算”），足够判断是否在商品层。
   step('加入购物车');
   // 宽松校验：找到“加入购物车”就点；找不到但页面已有数量+去结算，说明商品已在购物车，直接进结算。
   const add = await semantic.find(n => nodeLabel(n).includes('加入购物车'), 8_000).catch(() => null);

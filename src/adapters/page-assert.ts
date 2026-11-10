@@ -7,6 +7,45 @@
 import type { U2Node } from './meituan-semantic.js';
 import { nodeLabel } from './meituan-semantic.js';
 
+/** 读取当前前台 Activity 类名（硬信号，避免把刚进去的门店页误判成偏离）。 */
+async function currentActivity(): Promise<string> {
+  try {
+    const {execFile} = await import('node:child_process');
+    const {promisify} = await import('node:util');
+    const run = promisify(execFile);
+    const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+    const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+    const {stdout} = await run(adb, ['-s', serial, 'shell', 'dumpsys window | grep mCurrentFocus'], {timeout: 8_000, encoding: 'utf8'});
+    const m = /\s([\w.]+\/[\w.$]+)\}/.exec(String(stdout));
+    return m ? m[1]! : '';
+  } catch { return ''; }
+}
+
+/** Activity 类名到页面身份的硬映射（优先级高于文本特征）。 */
+// Activity 映射表：全部来自 2026-11-10 真机实测，不靠猜测。
+// 断言本身是必要的，之前误判是因为类名猜错，不是断言无用。
+const ACTIVITY_RULES: Array<[RegExp, MeituanPage | 'unknown']> = [
+  // 门店页（外卖门店容器）
+  [/waimai\.business\.restaurant\.poicontainer|WMRestaurant|RestaurantActivity/i, 'store'],
+  // 单品详情（半透明弹层）
+  [/machpro\.container\.MPTranslucent|MPTranslucentActivity/i, 'item'],
+  // 搜索结果页
+  [/SearchResultActivity|search\.result\.SearchResult/i, 'results'],
+  // 搜索输入页
+  [/search\.home\.SearchActivity/i, 'search'],
+  // 店内搜索/商品列表页
+  [/waimai\.business\.search\.ui\.GlobalSearch/i, 'inStoreItem'],
+  // 首页
+  [/homepage\.activity\.MainActivity/i, 'home'],
+  // 直播广场（明确偏离）
+  [/MLiveSquare|LiveSquare/i, 'unknown'],
+];
+
+function activityPage(activity: string): MeituanPage | 'unknown' | null {
+  for (const [re, page] of ACTIVITY_RULES) if (re.test(activity)) return page;
+  return null; // MRN 容器等未识别容器交给节点特征判定
+}
+
 export type MeituanPage =
   | 'home'        // 首页（含底部 tab）
   | 'takeout'     // 外卖频道首页
@@ -76,9 +115,13 @@ export function createPageAsserter(opts: {
   const { read, back, waitStable, log = () => {} } = opts;
 
   const assert = async (expected: MeituanPage, nodes?: U2Node[]) => {
-    const current = classifyMeituanPage(nodes ?? await read());
+    const nodesNow = nodes ?? await read();
+    const act = await currentActivity();
+    const byActivity = activityPage(act);
+    // Activity 是硬信号：识别到就直接采信，避免文本特征缺失导致误判（曾把门店页判成偏离并 back 退出）。
+    const current = byActivity ?? classifyMeituanPage(nodesNow);
     if (current !== expected) {
-      log(`[page] 期望 ${expected} 实际 ${current}`);
+      log(`[page] 期望 ${expected} 实际 ${current} activity=${act.slice(0, 60)}`);
     }
     return current;
   };
