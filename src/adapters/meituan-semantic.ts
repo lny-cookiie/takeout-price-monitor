@@ -150,7 +150,7 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
     return parseU2Xml(data.result ?? '');
   };
 
-  const waitStable = async (rounds = 8): Promise<U2Node[]> => {
+  const waitStable = async (rounds = 4): Promise<U2Node[]> => {
     let last = -1;
     for (let i = 0; i < rounds; i++) {
       const ns = await read().catch(() => [] as U2Node[]);
