@@ -7,6 +7,7 @@
 import type { AndroidSource } from './android-source.js';
 import type { U2Semantic, U2Node } from './meituan-semantic.js';
 import { nodeLabel } from './meituan-semantic.js';
+import { createPageAsserter, type MeituanPage, type PageAsserter } from './page-assert.js';
 
 export interface MeituanQuote {
   store: string | null;
@@ -40,7 +41,13 @@ export function readMeituanSettlement(nodes: U2Node[]): Partial<MeituanQuote> & 
     const hit = rows.find(r => r.label.includes(label));
     if (!hit) return '';
     // 只看纯金额节点（¥33.55 / 26.5 这种），避免把“共减¥0.05”这类说明文字当成金额。
-    const isAmount = (text: string) => /^[¥￥]?\s*\d[\d.]*\s*元?$/.test(text.trim());
+    // 金额至少要两位整数或带小数（避免把“3元红包”里的单个“3”或“共减5”的“5”当成费用金额）。
+    const isAmount = (text: string) => {
+      const t = text.trim();
+      if (!/^[¥￥]?\s*\d[\d.]*\s*元?$/.test(t)) return false;
+      const num = t.replace(/[¥￥元\s]/g, '');
+      return /\d{2,}/.test(num) || /\.\d+/.test(num);
+    };
     const candidate = rows
       .filter(r => Math.abs(r.y - hit.y) <= tolerance && r !== hit && isAmount(r.label))
       .sort((a, b) => Math.abs(a.y - hit.y) - Math.abs(b.y - hit.y))[0];
@@ -97,6 +104,13 @@ export interface MeituanFlowOptions {
  */
 export async function navigateMeituan(options: MeituanFlowOptions): Promise<string[]> {
   const { semantic, sleep, brand, itemName } = options;
+  // 事前校验：复用 semantic 的 read/back/waitStable，零额外读屏。
+  const asserter: PageAsserter = createPageAsserter({
+    read: () => semantic.read(),
+    back: () => semantic.back(),
+    waitStable: (n?: number) => semantic.waitStable(n),
+    log: (m: string) => console.log(m),
+  });
   const steps: string[] = [];
   const step = (name: string) => {
     steps.push(name);
@@ -108,25 +122,63 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     const nodes = await semantic.read();
     const labels = nodes.map(n => nodeLabel(n).trim());
     const has = (needle: string) => labels.some(l => l.includes(needle));
-    const ok = has('小象超市') && has('搜索');
-    if (!ok) console.log('[meituan] isHome=false', JSON.stringify({小象超市:has('小象超市'),搜索:has('搜索'),sample:labels.slice(0,8)}));
+    // 首页判定放宽：新版首页不一定有“小象超市”，但一定有“外卖/团购/我的”这类底部 tab。
+    const ok = has('搜索') && (has('小象超市') || has('外卖') || has('团购') || has('我的') || has('推荐'));
+    if (!ok) console.log('[meituan] isHome=false', JSON.stringify({搜索:has('搜索'),外卖:has('外卖'),团购:has('团购'),sample:labels.slice(0,8)}));
     return ok;
   };
-  // 回首页：先在 App 内返回重试；若已被退到桌面（读不到美团任何节点），重新打开 App（不 force-stop、不清数据）。
-  for (let i = 0; i < 5 && !(await isHome()); i++) {
-    await semantic.back();
-    await semantic.waitStable(4);
+  // 回首页：优先用 am start 重新拉起主界面（back 会把 App 退出到桌面，反而更糟）。
+  const startHome = async () => {
+    const {execFile} = await import('node:child_process');
+    const {promisify} = await import('node:util');
+    const run = promisify(execFile);
+    const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+    const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+    await run(adb, ['-s', serial, 'shell', 'am', 'start', '-n',
+      'com.sankuai.meituan/com.meituan.android.pt.homepage.activity.MainActivity'],
+      {timeout: 15_000, encoding: 'utf8'}).catch(() => null);
+    await semantic.waitStable(8);
+  };
+  for (let i = 0; i < 3 && !(await isHome()); i++) {
+    console.log('[meituan] 不在首页，重新拉起主界面 attempt', i + 1);
+    await startHome();
   }
   if (!(await isHome())) {
-    const probe = await semantic.read();
-    const inApp = probe.some(n => nodeLabel(n).includes('美团') || nodeLabel(n).includes('外卖'));
-    if (!inApp && options.reopenApp) await options.reopenApp();
-    await semantic.waitStable(6);
+    // 再次兜底：先 am start，再最多 back 2 次（只在不退出 App 的范围内）
+    await startHome();
+    for (let i = 0; i < 2 && !(await isHome()); i++) { await semantic.back(); await semantic.waitStable(3); }
   }
   if (!(await isHome())) throw new Error('meituan_not_home');
 
-  step('首页搜索按钮');
-  const search = await semantic.find(n => nodeLabel(n).trim() === '搜索' && n.width > 100);
+  await asserter.ensure('home');
+  step('进入外卖频道');
+  // 用户明确要求：必须先点【外卖】频道再搜索，否则团购业务会混进来；且点击前必须确认仍在主链路
+  // （曾出现误点“会场/便利鲜食”活动页的情况），不在主链路就先 back 回来。
+  const inMainPath = async () => {
+    const ns = await semantic.read().catch(() => [] as U2Node[]);
+    const labels = ns.map(n => nodeLabel(n));
+    return labels.some(l => /外卖|团购|我的|推荐|搜索/.test(l));
+  };
+  for (let i = 0; i < 4 && !(await inMainPath()); i++) {
+    await semantic.back();
+    await semantic.waitStable(4);
+  }
+  const takeoutTab = await semantic.find(n => nodeLabel(n).trim() === '外卖' && n.top > 300, 8_000)
+    ?? await semantic.find(n => nodeLabel(n).trim() === '外卖', 4_000);
+  if (!takeoutTab) throw new Error('meituan_no_takeout_tab');
+  await semantic.tap(takeoutTab, '外卖频道');
+  await semantic.waitStable(6);
+  {
+    const probe = await semantic.waitStable(4);
+    const labels = probe.map(n => nodeLabel(n));
+    const inTakeout = labels.some(l => /附近|到店|外卖|点菜|距离/.test(l));
+    if (!inTakeout) console.error('[meituan] 外卖频道校验未通过，继续尝试');
+    else console.log('[meituan] 已进入外卖频道');
+  }
+
+  step('外卖频道搜索按钮');
+  const search = await semantic.find(n => nodeLabel(n).trim() === '搜索' && n.width > 40, 8_000)
+    ?? await semantic.find(n => /搜索/.test(nodeLabel(n)) && n.width > 40, 6_000);
   if (!search) throw new Error('meituan_no_search_button');
   await semantic.tap(search, '搜索按钮');
 
@@ -135,7 +187,9 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   // 层级 2：精确匹配历史词；层级 3：包含匹配。
   const inResultPage = async () => {
     const ns = await semantic.waitStable(6);
-    return ns.some(n => nodeLabel(n).includes('综合排序') || nodeLabel(n).includes('全部'));
+    const labels = ns.map(n => nodeLabel(n));
+    // 外卖频道的搜索结果页未必有“综合排序/全部”，放宽到门店卡特征（评分/月售/起送/距离）。
+    return labels.some(l => /综合排序|销量|筛选|评分|月售|起送|配送|\d+(\.\d+)?km|\d+m/.test(l));
   };
   let searched = false;
   if (options.searchText) {
@@ -149,8 +203,20 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   if (!searched) {
     const exactHistory = await semantic.find(n => nodeLabel(n).trim() === brand, 6_000);
     const history = exactHistory ?? (await semantic.find(n => nodeLabel(n).includes(brand), 6_000));
-    if (!history) throw new Error('meituan_no_search_entry');
-    await semantic.tap(history, `历史 ${brand}`);
+    if (history) {
+      await semantic.tap(history, `历史 ${brand}`);
+    } else if (options.visualLocate) {
+      // 搜索页是 MRNX 容器读不到历史词：用视觉点搜索框，再键盘输入。
+      const inputHit = await options.visualLocate('页面顶部写着“搜索”的输入框');
+      if (!inputHit) throw new Error('meituan_no_search_entry');
+      await options.tapPoint(inputHit.x, inputHit.y);
+      await sleep(1_200);
+      await options.searchText?.(brand);
+      for (let i = 0; i < 5 && !searched; i++) { await sleep(1_000); searched = await inResultPage(); }
+      if (!searched) throw new Error('meituan_search_failed');
+    } else {
+      throw new Error('meituan_no_search_entry');
+    }
   }
 
   step('搜索结果页门店卡（视觉兜底）');
@@ -173,6 +239,7 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     throw new Error('meituan_store_card_needs_visual');
   }
 
+  await asserter.ensure('store');
   step('门店页搜索图标');
   // 美团门店页有两种容器：WMRestaurantActivity 的“搜索”可语义读取，MRNStandardActivity 读不到，需要视觉兜底。
   // 点击后必须进入店内搜索页（出现“请输入商品名”或“热门搜索”）；否则返回重试，避免点成分享/收藏后一路错下去。
@@ -239,10 +306,26 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   }
   if (!itemTapped) throw new Error('meituan_no_item');
 
+  await asserter.ensure('item');
   step('加入购物车');
-  const add = await semantic.find(n => nodeLabel(n).includes('加入购物车'), 12_000);
-  if (!add) throw new Error('meituan_no_add');
-  await semantic.tap(add, '加入购物车');
+  // 宽松校验：找到“加入购物车”就点；找不到但页面已有数量+去结算，说明商品已在购物车，直接进结算。
+  const add = await semantic.find(n => nodeLabel(n).includes('加入购物车'), 8_000).catch(() => null);
+  if (add) {
+    await semantic.tap(add, '加入购物车');
+    await sleep(1_200);
+  } else {
+    const probe = await semantic.waitStable(6);
+    const labels = probe.map(n => nodeLabel(n));
+    const hasCheckout = labels.some(l => l.includes('去结算'));
+    const hasQuantity = labels.some(l => /^\d+$/.test(l.trim())) || labels.some(l => /件|份/.test(l));
+    if (hasCheckout) {
+      console.log('[meituan] 未找到加购按钮，但已出现“去结算”，判定为已加购');
+    } else if (!hasQuantity) {
+      throw new Error('meituan_no_add');
+    } else {
+      console.log('[meituan] 未找到加购按钮，但页面已有数量选择，判定为已加购');
+    }
+  }
 
   step('去结算');
   const go = await semantic.find(n => nodeLabel(n).includes('去结算') || nodeLabel(n).includes('去支付'), 18_000);
