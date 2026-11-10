@@ -156,10 +156,11 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     }
   }
   if (!searched) {
+    // 键盘搜索失败时，历史词点击的风险是进错品牌门店（曾进华莱士），所以历史词必须精确等于品牌名。
     const exactHistory = await semantic.find(n => nodeLabel(n).trim() === brand, 6_000);
-    const history = exactHistory ?? (await semantic.find(n => nodeLabel(n).includes(brand), 6_000));
-    if (!history) throw new Error('meituan_no_search_entry');
-    await semantic.tap(history, `历史 ${brand}`);
+    if (!exactHistory) throw new Error('meituan_search_failed');
+    await semantic.tap(exactHistory, `历史 ${brand}`);
+    await sleep(2_000);
   }
 
   step('搜索结果页门店卡（视觉兜底）');
