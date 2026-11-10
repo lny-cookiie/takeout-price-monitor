@@ -10,11 +10,17 @@ import { AndroidUiTreeReader } from './android-uitree.js';
 const run=promisify(execFile);
 const adb=()=>process.env.MIDSCENE_ADB_PATH || 'adb';
 export async function requireAndroidForeground(shell:()=>Promise<string>,target:string,signal:AbortSignal){
-  for(let attempt=0;attempt<3;attempt++){
+  for(let attempt=0;attempt<4;attempt++){
     signal.throwIfAborted();
     const dump=await shell(),line=dump.split(/\r?\n/).find(value=>/mCurrentFocus=Window/.test(value));
     const component=line?/[a-zA-Z][\w.]*(?:\.[\w.]+)+\/[\w.$]+/.exec(line)?.[0]:undefined;
     if(component?.split('/')[0]===target)return;
+    // App 被切到后台（系统弹窗、误触返回等）：自动把目标 App 拉回前台再重试，而不是直接失败。
+    if(component && attempt<3){
+      await run(adb(),['-s',process.env.MIDSCENE_ADB_SERIAL ?? '', 'shell','monkey','-p',target,'-c','android.intent.category.LAUNCHER','1'],{timeout:8_000,windowsHide:true}).catch(()=>undefined);
+      await wait(1_500,undefined,{signal});
+      continue;
+    }
     if(component)throw new CollectionError('target_app_not_foreground','blocked');
     if(attempt<2)await wait(150,undefined,{signal});
   }
