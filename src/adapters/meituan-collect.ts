@@ -243,7 +243,8 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     6_000,
   );
   if (storeCardExact) {
-    await semantic.tap(storeCardExact, '门店卡(语义)');
+    // 点卡片右侧（进店按钮区），点标题文字不会跳转
+    await semantic.tap(storeCardExact, '门店卡(语义-右侧进店)', 0.85);
   } else if (options.visualLocate) {
     // 提示词要贴实际界面形态：实测结果页卡片描述形如“221m 麦当劳(天大西门湖滨道IS店) 评分4.7”。
     // 用“门店名这一行文字”定位比“门店卡片”这种抽象描述准得多。
