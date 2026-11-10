@@ -1,3 +1,4 @@
+import {request} from 'node:http';
 // 美团采集的语义定位基础模块：
 // 1) 直接解析 u2 JSON-RPC 的原始 XML（保留 text/content-desc，绕过 Midscene 树丢失文本的问题）；
 // 2) 点击坐标一律由节点 bounds 按屏幕比例换算（跨机型，无绝对坐标常量）；
@@ -82,14 +83,17 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
   let physical: { width: number; height: number } | null = null;
 
   const read = async (): Promise<U2Node[]> => {
-    const resp = await fetch(`http://127.0.0.1:${port}/jsonrpc/0`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'dumpWindowHierarchy', params: [true, 200, true] }),
-      signal: AbortSignal.timeout(options.readTimeoutMs ?? 15_000),
-    });
-    const data = (await resp.json()) as { result?: string };
-    return parseU2Xml(data.result ?? '');
+    // u2 服务在这台设备上读到第 2 次就崩（curl 也从 200 变 000），不可作为稳定通道。
+    // 改用系统 uiautomator dump：走系统无障碍服务，不依赖 u2 常驻进程；实测美团首页 2.7 秒、32KB XML、文本完整。
+    const {execFile} = await import('node:child_process');
+    const {promisify} = await import('node:util');
+    const run = promisify(execFile);
+    const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+    const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+    const remote = '/sdcard/u2sem-dump.xml';
+    await run(adb, ['-s', serial, 'shell', `uiautomator dump --compressed ${remote}`], {timeout: 12_000, encoding: 'utf8'}).catch(() => null);
+    const {stdout} = await run(adb, ['-s', serial, 'shell', `cat ${remote}`], {timeout: 12_000, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
+    return parseU2Xml(stdout ?? '');
   };
 
   const waitStable = async (rounds = 8): Promise<U2Node[]> => {
