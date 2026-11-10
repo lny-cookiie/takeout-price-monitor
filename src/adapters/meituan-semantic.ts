@@ -78,8 +78,34 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
   const port = options.port ?? 9008;
   const sleep = options.sleep;
   let physical: { width: number; height: number } | null = null;
+  let u2Reader: any = null;
 
   const read = async (): Promise<U2Node[]> => {
+    // 主通道：AndroidUiTreeReader 完整解析（实测 245 节点、带 bounds/层级，是视觉兜底的最优替代）。
+    try {
+      if (!u2Reader) {
+        const {AndroidUiTreeReader} = await import('./android-uitree.js');
+        u2Reader = await AndroidUiTreeReader.create({
+          serial: process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133',
+          adbPath: process.env.MIDSCENE_ADB_PATH ?? 'adb',
+        });
+      }
+      const tree = await u2Reader.read() as any;
+      const out: U2Node[] = [];
+      const walk = (n: any) => {
+        if (!n) return;
+        const a = n.attrs ?? {};
+        const b = a.bounds ? /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(String(a.bounds)) : null;
+        if (b) {
+          const [l, t, r, bo] = [Number(b[1]), Number(b[2]), Number(b[3]), Number(b[4])];
+          out.push({text: String(a.text ?? ''), desc: String(a['content-desc'] ?? ''), cls: String(a.class ?? ''),
+            rid: String(a['resource-id'] ?? ''), left: l, top: t, width: r - l, height: bo - t});
+        }
+        for (const c of (n.children ?? [])) walk(c);
+      };
+      walk(tree?.root);
+      if (out.filter(n => nodeLabel(n)).length > 10) return out;
+    } catch { /* 落回原通道 */ }
     const resp = await fetch(`http://127.0.0.1:${port}/jsonrpc/0`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
