@@ -100,6 +100,9 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
   if (version!==source.appVersion) throw new CollectionError('app_version_changed','blocked');
   signal.throwIfAborted();
   const device=new AndroidDevice(source.device,{exposeRunAdbShellAction:false,alwaysRefreshScreenInfo:false});
+  // 会话起点保证 dump 通道干净：手机上可能残留上一条链路启动的 u2 服务（u2 占用无障碍时 dump 读不到树）。
+  await run(adb(),['-s',source.device,'shell','pkill','-f','com.wetest.uia2'],{timeout:4000,windowsHide:true}).catch(()=>undefined);
+  await wait(1_200);
   const beforeInput=()=>{
     // Cart restoration owns a separate deadline after collection is cancelled.
     const inputSignal=AbortSignal.timeout(5000);
@@ -124,8 +127,13 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
     await wait(1500);
   };
   const setTreeMode = async (mode: 'u2' | 'dump'): Promise<void> => {
-    if (mode === treeMode) return;
+    // 不能因为 mode === treeMode 就提前返回：手机上可能残留上一个平台启动的 u2 服务，
+    // 而本会话 treeMode 初始就是 'dump'，直接 return 会跳过 stopU2，导致 dump 被 u2 占用而读不到树。
     if (mode === 'u2') {
+      // 切换前记录页面签名：u2 服务启动会重建 Activity，可能把当前页面顶回上一层。
+      // 记录签名是为了让调用方（或日志）能确认"切通道有没有改变页面"。
+      const beforeFocus = await run(adb(), ['-s', source.device, 'shell', 'dumpsys window | grep mCurrentFocus'], {timeout: 4000, windowsHide: true, encoding: 'utf8'})
+        .then(r => String(r.stdout ?? '').trim()).catch(() => '');
       // u2 服务刚重启或尚未就绪时会瞬时连不上（fetch failed）：重试 3 次吸收这个窗口，
       // 重试耗尽才明确失败，避免整条链路因为一次连接拒绝而中断。
       let lastError: unknown = null;
@@ -136,6 +144,11 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
           // 切换后先预热一次读取：服务起不来就明确报错，不能静默回落 dump（详情页 dump 会整次超时）。
           await reader.read();
           treeMode = mode;
+          const afterFocus = await run(adb(), ['-s', source.device, 'shell', 'dumpsys window | grep mCurrentFocus'], {timeout: 4000, windowsHide: true, encoding: 'utf8'})
+            .then(r => String(r.stdout ?? '').trim()).catch(() => '');
+          if (beforeFocus && afterFocus && beforeFocus !== afterFocus) {
+            console.error('[diag] channel_switch_changed_page', JSON.stringify({before: beforeFocus.slice(0, 90), after: afterFocus.slice(0, 90)}));
+          }
           return;
         } catch (error) {
           lastError = error;
@@ -204,6 +217,11 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
     },
     async close() {
       await run(adb(),[...args,'shell','rm','-f','/sdcard/midscene_window_dump.xml'],{timeout:4000,windowsHide:true}).catch(()=>undefined);
+      // 会话结束不停 u2 会污染下一个平台（串行时京东 dump 读不到树）。
+      if (treeMode === 'u2' || u2) {
+        await run(adb(),[...args,'shell','pkill','-f','com.wetest.uia2'],{timeout:4000,windowsHide:true}).catch(()=>undefined);
+        await wait(600);
+      }
       await device.destroy().catch(()=>undefined);
     }
   };

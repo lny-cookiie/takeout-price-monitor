@@ -58,7 +58,7 @@ export interface AttemptResult {
   menuPriceReason?: string | null;
   status: ResultStatus; error_code: string | null; availability: string; observation: Observation | null;
   trace: TraceStep[]; evidence: Evidence | null; started_at: string; finished_at: string;
-  cleanup: 'restored' | 'untouched' | 'quarantined'; cost: { model_yuan: number | null; execution_ms: number };
+  cleanup: 'restored' | 'untouched' | 'quarantined' | 'needs_attention'; cost: { model_yuan: number | null; execution_ms: number };
   market?: MarketRead;
   shelf?: JdShelfResult;
 }

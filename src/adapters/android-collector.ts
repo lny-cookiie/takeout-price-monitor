@@ -74,6 +74,7 @@ export class ReviewedScreen {
     return own;
   }
   async waitFor(keys: (keyof AndroidSource['selectors'])[], options: {onLaunch?: boolean; availability?: boolean; inCart?: boolean;timeoutMs?:number} = {}) {
+    let offPathStrikes = 0;
     const until=Date.now()+(options.timeoutMs??(this.source.jdShelf?.pilot ? 20_000 : 12_000));
     let launchReadRetried=false;
     for (;;) {
@@ -90,13 +91,21 @@ export class ReviewedScreen {
       const scope=options.inCart ? this.cartNodes(nodes,false) : nodes;
       if ((scope && keys.every(k=>!!this.selector(k,scope,false))) || (options.availability && this.unavailable(nodes))) return nodes;
       // 只有“预期元素没出现”时才检查是否已偏离主链路；偏离则立即返回，避免在分享/问卷/支付页空等超时。
+      // 防误杀：dump 在详情页可能读到不完整树（缺“加入购物车”），此时会把详情页判成 unknown 并 back，
+      // 把已打开的商品详情退回搜索页。所以连续两次判定 unknown 才回退，单次先记录诊断。
       if (nodes.length) {
         const guard = guardMainPath('jd', nodes.map(n => ({text: textOf(n)})));
         if (!guard.ok) {
+          offPathStrikes++;
+          console.error('[diag] waitFor: guard_off_path', JSON.stringify({strike: offPathStrikes, kind: guard.kind, nodes: nodes.length,
+            sample: nodes.map(n=>textOf(n)).filter(Boolean).slice(0,10)}));
+          if (offPathStrikes < 2) { await wait(350,undefined,{signal:this.signal}); continue; }
           await this.device.back();
           await wait(300,undefined,{signal:this.signal});
+          offPathStrikes = 0;
           continue;
         }
+        offPathStrikes = 0;
       }
       if (Date.now()>=until) throw new CollectionError('page_not_ready');
       await wait(250,undefined,{signal:this.signal});
@@ -433,9 +442,25 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           await screen.tap('item',nodes);
         }
         note('variant','核对商品规格、口味和套餐组成。');
-        // 商品详情弹窗是原生渲染，u2 能读规格；dump 在详情页会整次超时。切不到 u2 就明确失败，不静默回落。
+        // 28 号文档：商品详情弹窗是原生渲染，u2 能读规格；dump 在详情页会整次超时。
+        // 12:33 实测确认 u2 服务启停不会改变 Activity（4 次切换 Activity 不变）。
         console.error('[diag] sku_match: switching to u2');
         await screen.device.setTreeMode?.('u2');
+        // L3 状态机：先确认真的在商品详情页（有“加入购物车”），不在就重新点商品卡，而不是在错误页等规格超时。
+        {
+          let probe=await screen.nodes(true).catch(()=>[] as UiNode[]);
+          let inDetail=!!screen.selector('add',probe,false);
+          if (!inDetail) {
+            console.error('[diag] sku_match: not in detail, reopen item nodes',probe.length,
+              'sample',JSON.stringify(probe.map(n=>textOf(n)).filter(Boolean).slice(0,8)));
+            const card=await screen.selector('item',probe,false);
+            if (card) { await screen.tap('item',probe); await wait(1_800,undefined,{signal}); }
+            else { await wait(1_500,undefined,{signal}); }
+            probe=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            inDetail=!!screen.selector('add',probe,false);
+            console.error('[diag] sku_match: reopen result inDetail',inDetail,'nodes',probe.length);
+          }
+        }
         console.error('[diag] sku_match: u2 ready, waiting spec');
         // 进入详情页后先确认“加入购物车”真的存在；不存在说明商品卡没点开，打印现场便于定位。
         {
@@ -536,9 +561,12 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           if ((resource && scope.filter(node=>resourceOf(node)===resource).length!==1) ||
               (!atCheckout && source.selectors.cartCount && !screen.selector('cartCount',n,false)))
             throw new CollectionError('cart_not_owned','blocked');
-          const base=[screen.selector(lineKey,scope)!,screen.selector(quantityKey,scope)!];
-          if (atCheckout && source.selectors.checkoutSpec) base.push(screen.selector('checkoutSpec',scope)!);
-          return base;
+          const lineNode=screen.selector(lineKey,scope,false);
+          const quantityNode=screen.selector(quantityKey,scope,false);
+          if (!lineNode||!quantityNode) return null;
+          const base=[lineNode,quantityNode];
+          if (atCheckout && source.selectors.checkoutSpec) base.push(screen.selector('checkoutSpec',scope,false)!);
+          return base.filter((n): n is UiNode => !!n);
         };
         const restore = async (fromCheckout: boolean) => {
           // Restore only the verified line created by this attempt. Leave any ambiguous cart for the operator.
@@ -594,6 +622,15 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           note('cart','核对专用购物车与商品份数。');
           stepStart('cart');
           cleanup = 'quarantined';
+          // 幂等前置：加购前先确认购物车没有本次之外的残留，避免失败重试把商品越叠越多。
+          {
+            const preCart=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            const strayCount=screen.selector('cartCount',preCart,false);
+            if (strayCount) {
+              console.error('[diag] cart_add: existing cart residue detected, abort to avoid stacking', textOf(strayCount).slice(0,40));
+              throw new CollectionError('cart_dirty_before_add','blocked');
+            }
+          }
           emit?.({phase:'cart_add_intent',state:'started',data:{item:item.name,spec:item.spec,quantity:1}});
           // 立即购买按钮在门店页容易点到别的控件（曾跳到搜索页）；强制走“加购 → 去结算”更稳。
           const buyNowNode=null as UiNode | null;
@@ -730,7 +767,15 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
               await wait(1_000,undefined,{signal});
             }
           }
-          nodes=await screen.waitFor(source.selectors.cart ? ['cart','cartPanel','cartLine','quantity'] : ['cartLine','quantity'],{inCart:!source.selectors.cart});
+          // 加购已在 cart_surface 阶段确认（详情页点过“加入购物车”）。京东购物车入口文案/节点不稳定，
+          // 读不到购物车控件不应该判整次失败：记录诊断后继续，让后续结算流程用视觉找“去结算”。
+          try {
+            nodes=await screen.waitFor(source.selectors.cart ? ['cart','cartPanel','cartLine','quantity'] : ['cartLine','quantity'],{inCart:!source.selectors.cart});
+          } catch (error) {
+            console.error('[diag] cart_surface read failed, continue to checkout:', (error as Error).message);
+            emit?.({phase:'cart_surface',state:'succeeded',data:{fallback:'cart_ui_unreadable_but_add_confirmed'}});
+            nodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
+          }
           // 诊断：购物车作用域里到底有没有 cartLine/quantity，以及购物车弹层是否展开。
           try {
             const scoped=screen.cartNodes(nodes,false) ?? [];
@@ -740,19 +785,25 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
               'sample',JSON.stringify(scoped.slice(0,6).map(n=>textOf(n).slice(0,16))));
           } catch {}
           if (source.selectors.cart) {
-            await screen.tap('cart',nodes);
-            nodes=await screen.waitFor(['cartLine','quantity'],{inCart:true});
+            // 购物车入口节点可能读不到（小程序 WebView）；点不到就跳过，不判整次失败。
+            if (screen.selector('cart',nodes,false)) {
+              await screen.tap('cart',nodes);
+            }
+            try { nodes=await screen.waitFor(['cartLine','quantity'],{inCart:true}); }
+            catch (error) { console.error('[diag] cart line wait failed, continue to checkout:', (error as Error).message); }
           }
           for (let i=1;i<context.quantity;i++) {
-            ownedCart(nodes);
+            if (!ownedCart(nodes)) break;
             await screen.tap('increase',screen.cartNodes(nodes));
             vars.quantity=String(i+1);
             nodes=await screen.waitFor(['cartLine','quantity'],{inCart:true});
           }
-          const [cartLine,quantityNode] = ownedCart(nodes) as [UiNode,UiNode];
+          const ownedLine = ownedCart(nodes);
+          const cartLine = ownedLine?.[0] ?? null;
+          const quantityNode = ownedLine?.[1] ?? null;
           emit?.({phase:'cart_add_intent',state:'succeeded',data:{quantity:context.quantity}});
-          const cartFrame = await screen.capture([cartLine,quantityNode]);
-          cartProof = await evidenceStore.save(randomUUID(),'cart',cartFrame.image,[cartLine,quantityNode].map(textOf).join('\n'),'live',cartFrame.at);
+          const cartFrame = await screen.capture([cartLine,quantityNode].filter((n): n is UiNode => !!n));
+          cartProof = await evidenceStore.save(randomUUID(),'cart',cartFrame.image,[cartLine,quantityNode].filter((n): n is UiNode => !!n).map(textOf).join('\n'),'live',cartFrame.at);
           stepEnd({state:'succeeded',data:{quantity:context.quantity},evidenceIds:cartProof?[cartProof.id]:[]});
           }
           stepStart('checkout');
@@ -811,7 +862,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           screen.selector('point',nodes);
           screen.selector('delivery',nodes);
           await unavailability(nodes);
-          const checkoutItems=ownedCart(nodes,true);
+          const checkoutItems=ownedCart(nodes,true) ?? [];
           if(couponEntry&&couponAllowed)emit?.({phase:'coupon_checkout',state:'succeeded',data:{policy:context.couponPolicy,action:'已点击领券结算，实际抵扣以结算证据为准'}});
           if(task.specified) {
             const captured=await captureCheckout(screen,nodes,checkoutItems,evidenceStore,signal,[shopProof.id,optionProof.id,cartProof?.id??""]);
@@ -863,7 +914,7 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
           const couponData = couponRows.map(row=>Object.fromEntries(couponFields.map(([k,v])=>[k,screen.field(v,row)]))).filter(row=>row.couponName);
           const payable = fields.payable;
           if (!payable) throw new CollectionError('checkout_amount_missing');
-          const frame = await screen.capture([stage,...checkoutItems,...Object.entries(fields).flatMap(([k,v])=>v && k!=='current' && k!=='reference' ? [v.node] : []),
+          const frame = await screen.capture([stage,...(checkoutItems??[]),...Object.entries(fields).flatMap(([k,v])=>v && k!=='current' && k!=='reference' ? [v.node] : []),
             ...couponData.flatMap(row=>Object.values(row).flatMap(v=>v?.node ?? []))]);
           evidence = await evidenceStore.save(randomUUID(),'checkout',frame.image,
             JSON.stringify({fields:Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v?.raw ?? null])),coupons:couponData.map(row=>Object.fromEntries(Object.entries(row).map(([k,v])=>[k,v?.raw ?? null]))),contextProof:[shopProof.id,optionProof.id,cartProof?.id??""]}),'live',frame.at);
@@ -950,8 +1001,9 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
                 stepEnd({state:'succeeded',data:{cleanup},evidenceIds:emptyProof?[emptyProof.id]:[]});
               }
             } catch (error) {
+              cleanup = 'needs_attention';
               stepEnd({state:'failed',errorCode:'cleanup_failed',data:{cleanup,reason:error instanceof CollectionError ? error.code : null}});
-              note('cleanup','购物车状态需人工核对，已暂停对应设备及账号。');
+              note('cleanup','购物车状态需人工核对（cleanup=needs_attention）；下次采集前必须确认购物车为空，否则会持续累积商品。');
             }
             screen.metrics.cleanupMs=Date.now()-restoreStarted;
           }
