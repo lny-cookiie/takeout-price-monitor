@@ -219,8 +219,16 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
 
   step('店内搜索热门词');
   const hot = await semantic.find(n => nodeLabel(n).trim() === itemName, 12_000);
-  if (!hot) throw new Error('meituan_no_hot_word');
-  await semantic.tap(hot, `热门 ${itemName}`);
+  if (hot) {
+    await semantic.tap(hot, `热门 ${itemName}`);
+  } else if (options.searchText) {
+    // 热门词会随门店/时段变化，读不到时退到店内搜索框直接输入商品名。
+    console.log('[meituan] 热门词不可用，改用店内搜索框输入');
+    await options.searchText(itemName);
+    await sleep(2_500);
+  } else {
+    throw new Error('meituan_no_hot_word');
+  }
 
   step('单品');
   // 搜索结果页顶部搜索框里也会出现商品名文本；从下往上逐个候选点击，点完校验是否出现“加入购物车”。

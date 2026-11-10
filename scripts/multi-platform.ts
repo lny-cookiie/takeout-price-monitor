@@ -1,12 +1,18 @@
 // 三平台串行采集调度（node 版，替代不稳定的 bash 脚本）：
 // 美团 → 淘宝闪购 → 京东（京东需要先起服务）。每平台独立超时，结果写 JSONL 汇总。
-import {spawn} from 'node:child_process';
+import {spawn, execSync} from 'node:child_process';
 import {mkdir, writeFile} from 'node:fs/promises';
 import {openSync, closeSync, statSync} from 'node:fs';
 
 const TS = new Date().toISOString().replace(/[-:TZ]/g, '').slice(0, 6);
 const OUT = `.runtime/mp-${TS}`;
 const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 19), ...a);
+/** Windows 下杀整棵进程树：child.kill 只杀直接子进程，node/tsx 会残留继续跑。 */
+function killTree(pid: number | undefined) {
+  if (!pid) return;
+  try { execSync(`taskkill /PID ${pid} /T /F`, {stdio: 'ignore'}); } catch {}
+  try { process.kill(pid, 'SIGKILL'); } catch {}
+}
 const ADB = 'D:/vibecoding/takeout_price_competition/.runtime/adb-official-probe/platform-tools/adb.exe';
 
 /** 依次执行一个命令，超时强杀，返回 exit code 与耗时；stdout/stderr 落盘便于事后核对业务结果。 */
@@ -26,13 +32,13 @@ function runStep(name: string, cmd: string, args: string[], timeoutMs: number, l
           stalled = true;
           killed = true;
           log(`⚠ ${name} 已 ${Math.round((Date.now() - start) / 1000)} 秒无进展（日志 ${stat.size} 字节未变化），判定卡死并终止`);
-          child.kill('SIGKILL');
+          killTree(child.pid);
         } else {
           lastSize = stat.size;
         }
       } catch {}
     }, 90_000);
-    const timer = setTimeout(() => { killed = true; child.kill('SIGKILL'); }, timeoutMs);
+    const timer = setTimeout(() => { killed = true; killTree(child.pid); }, timeoutMs);
     child.on('close', code => {
       clearTimeout(timer);
       clearInterval(watchdog);
@@ -63,7 +69,7 @@ function adbText(args: string[]): Promise<string> {
 }
 
 /** 轮询确认目标 App 已在前台（比固定 sleep 稳，切换慢时自动等待）。 */
-async function waitAppForeground(pkg: string, timeoutMs = 20_000): Promise<boolean> {
+async function waitAppForeground(pkg: string, timeoutMs = 30_000): Promise<boolean> {
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
     const focus = await adbText(['shell', 'dumpsys window | grep mCurrentFocus']);
@@ -102,7 +108,12 @@ const results: Array<{name: string; code: number; seconds: number; business?: st
 
 // 1 美团
 await adbShell(['shell', 'am', 'start', '-n', 'com.sankuai.meituan/com.meituan.android.pt.homepage.activity.MainActivity']);
-const meituanReady = await waitAppForeground('com.sankuai.meituan');
+let meituanReady = await waitAppForeground('com.sankuai.meituan');
+if (!meituanReady) {
+  log('美团首次启动未就绪，重试一次');
+  await adbShell(['shell', 'monkey', '-p', 'com.sankuai.meituan', '-c', 'android.intent.category.LAUNCHER', '1']);
+  meituanReady = await waitAppForeground('com.sankuai.meituan', 25_000);
+}
 log('美团前台就绪', meituanReady);
 const meituanResult = await runStep('meituan', process.execPath, ['--env-file-if-exists=.env', 'node_modules/tsx/dist/cli.mjs', '.runtime/meituan-v10.ts'], 180_000, `${OUT}/meituan.log`);
 results.push(meituanResult);
