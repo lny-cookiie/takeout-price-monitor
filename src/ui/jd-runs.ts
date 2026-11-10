@@ -169,12 +169,58 @@ function shelfReport(shelf:JdShelfResult,slots:CollectionSlot[]) {
         ${proofLink(item.evidence,'菜单截图')}</li>`).join('')}</ul></details>`:''}`);
 }
 
+// 采集进度条：把后端执行步骤映射成 8 个关键节点，让用户实时看到工具走到哪一步。
+const PROGRESS_NODES = [
+  { key: 'home', label: '进入首页', patterns: [/home|首页|MainActivity/i] },
+  { key: 'takeout', label: '打开外卖频道', patterns: [/takeout|外卖频道|外卖入口/i] },
+  { key: 'search', label: '搜索品牌名', patterns: [/brand_search|搜索品牌|搜索页/i] },
+  { key: 'results', label: '进入门店结果页', patterns: [/results|搜索结果|门店卡/i] },
+  { key: 'store', label: '进入店铺', patterns: [/store|门店页|进店/i] },
+  { key: 'item', label: '定位爆品', patterns: [/item|店内搜索|单品|热门词/i] },
+  { key: 'cart', label: '加购结算', patterns: [/cart|加购|去结算|checkout/i] },
+  { key: 'done', label: '采数完成', patterns: [/quote|menu_model|采数完成|completed/i] },
+] as const;
+
+function progressIndex(slots: CollectionSlot[]): { index: number; failed: boolean } {
+  const stepText = slots
+    .flatMap(slot => (slot.attempts ?? []).flatMap((a: any) => (a.steps ?? []).map((x: any) => String(x?.name ?? x?.phase ?? x))))
+    .join(' | ');
+  let index = 0;
+  for (let i = 0; i < PROGRESS_NODES.length; i++) {
+    const node = PROGRESS_NODES[i]!;
+    if (node.patterns.some((p: RegExp) => p.test(stepText))) index = i + 1;
+  }
+  return { index, failed: slots.some(s => s.error) };
+}
+
+function progressBar(slots: CollectionSlot[], state: string) {
+  const { index, failed } = progressIndex(slots);
+  const pct = Math.round((index / PROGRESS_NODES.length) * 100);
+  const isFailed = failed && state !== 'completed';
+  const cur = PROGRESS_NODES[Math.min(index, PROGRESS_NODES.length - 1)]!;
+  const nodes = PROGRESS_NODES.map((node, i) => {
+    const done = i < index;
+    const current = i === index && state === 'running';
+    const cls = done ? 'is-done' : current ? 'is-current' : isFailed && i === index ? 'is-failed' : '';
+    return `<li class="${cls}"><span class="dot">${done ? '✓' : i + 1}</span><span class="label">${h(node.label)}</span></li>`;
+  }).join('');
+  const text = isFailed ? `采集在「${h(cur.label)}」失败`
+    : index >= PROGRESS_NODES.length ? '采数完成'
+    : `当前进度：${h(cur.label)}`;
+  return `<div class="collect-progress" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
+    <div class="collect-progress-track"><div class="collect-progress-fill${isFailed ? ' is-failed' : ''}" style="width:${pct}%"></div></div>
+    <ol class="collect-progress-nodes">${nodes}</ol>
+    <p class="collect-progress-text">${text}（${pct}%）</p>
+  </div>`;
+}
+
 export function renderRun(ws:Workspace,report:CollectionRun) {
   const {run,shelf,slots}=report;
   const quotes=slots.filter(slot=>slot.kind==='quote');
   const completed=quotes.filter(slot=>!['queued','running'].includes(slot.state)).length;
   const status=[runStates[report.state],quotes.length?`已处理 ${completed} / ${quotes.length} 个商品`:'',report.elapsedMs==null?'':`全程耗时 ${duration(report.elapsedMs)}`].filter(Boolean).join(' · ');
   return panel(`<h2>${h(run.label)}</h2><p class="muted">${h(time(run.created_at))} 发起</p><p role="status">${h(status)}</p>
+    ${progressBar(slots,report.state)}
     ${report.queueMs!=null && report.executionMs!=null ? `<small class="sub">排队 ${h(duration(report.queueMs))} · 执行 ${h(duration(report.executionMs))}</small>`:''}
     <small class="sub">任务编号 ${h(run.id)}</small>`)+(shelf?shelfReport(shelf,slots):'')+
     (quotes.length ? panel(`<h2>报价与依据</h2>${quotes.map(slot=>`<details class="run-log" data-detail-key="quote-${h(slot.id)}">
