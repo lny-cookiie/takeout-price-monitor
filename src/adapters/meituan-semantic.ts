@@ -57,9 +57,9 @@ export function parseU2Xml(xml: string): U2Node[] {
       const hit = new RegExp(name + '="([^"]*)"').exec(raw);
       return hit ? hit[1]! : '';
     };
+    // bounds 缺失不该整条丢弃：保留文本节点（坐标置 0），由上层按文本匹配而不是坐标匹配。
     const bm = /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(attr('bounds'));
-    if (!bm) continue;
-    const [l, t, r, b] = [Number(bm[1]), Number(bm[2]), Number(bm[3]), Number(bm[4])];
+    const [l, t, r, b] = bm ? [Number(bm[1]), Number(bm[2]), Number(bm[3]), Number(bm[4])] : [0, 0, 0, 0];
     nodes.push({
       text: attr('text'),
       desc: attr('content-desc'),

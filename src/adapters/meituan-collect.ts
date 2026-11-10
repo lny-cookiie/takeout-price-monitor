@@ -231,10 +231,13 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   } else if (options.visualLocate) {
     // 提示词要贴实际界面形态：实测结果页卡片描述形如“221m 麦当劳(天大西门湖滨道IS店) 评分4.7”。
     // 用“门店名这一行文字”定位比“门店卡片”这种抽象描述准得多。
-    const hit = await options.visualLocate(`搜索结果里“${brand}”这三个字所在的门店名称那一行（形如 ${brand}(某某店)）`);
-    if (!hit) throw new Error('meituan_store_card_unlocated');
-    await options.tapPoint(hit.x, hit.y);
-    await sleep(1_800);
+    // 门店名文字本身可能只是选中卡片而不跳转，真正进店的是卡片上的“进店”按钮。
+    // 策略：优先点“进店”按钮，没有才退回点门店名；点完都要等页面跳转。
+    const enterBtn = await options.visualLocate(`搜索结果门店卡片右侧的“进店”按钮`);
+    const cardHit = enterBtn ?? await options.visualLocate(`搜索结果里“${brand}”这三个字所在的门店名称那一行（形如 ${brand}(某某店)）`);
+    if (!cardHit) throw new Error('meituan_store_card_unlocated');
+    await options.tapPoint(cardHit.x, cardHit.y);
+    await sleep(2_800);
   } else {
     throw new Error('meituan_store_card_needs_visual');
   }
