@@ -1,11 +1,8 @@
-import {request} from 'node:http';
 // 美团采集的语义定位基础模块：
 // 1) 直接解析 u2 JSON-RPC 的原始 XML（保留 text/content-desc，绕过 Midscene 树丢失文本的问题）；
 // 2) 点击坐标一律由节点 bounds 按屏幕比例换算（跨机型，无绝对坐标常量）；
 // 3) 语义匹配失败时，把"视觉兜底"收敛到一个 hook，由调用方注入（项目统一的 model.locate）。
 // 4) 点错后的恢复方式是返回上一页重试，禁止重启 App。
-
-import {guardMainPath} from './page-guard.js';
 
 export interface U2Node {
   text: string;
@@ -82,55 +79,15 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
   const sleep = options.sleep;
   let physical: { width: number; height: number } | null = null;
 
-  // 读屏策略（依据 13:41 取证）：美团新版 MRNX 容器页面持续动画，uiautomator dump 会报
-  // “could not get idle state” 读不到；u2 反而能读（u2 read ok true）。所以 u2 优先，dump 兜底。
-  let u2Reader: any = null;
-  const readU2 = async (): Promise<U2Node[] | null> => {
-    try {
-      if (!u2Reader) {
-        const {AndroidUiTreeReader} = await import('./android-uitree.js');
-        u2Reader = await AndroidUiTreeReader.create({
-          serial: process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133',
-          adbPath: process.env.MIDSCENE_ADB_PATH ?? 'adb',
-        });
-      }
-      const tree = await u2Reader.read() as any;
-      const root = tree?.root;
-      if (!root) return null;
-      // UiNode{caption?, attrs, bounds, children} → U2Node{label,x,y,w,h}（与 parseU2Xml 输出结构对齐）
-      const out: U2Node[] = [];
-      const walk = (n: any, depth: number) => {
-        if (depth > 60) return;
-        const text = String(n?.attrs?.text ?? '').trim();
-        const desc = String(n?.attrs?.['content-desc'] ?? '').trim();
-        const b = n?.bounds ?? {};
-        if (text || desc) out.push({
-          text, desc,
-          cls: String(n?.attrs?.class ?? ''),
-          rid: String(n?.attrs?.resourceId ?? ''),
-          left: b.left ?? 0, top: b.top ?? 0, width: b.width ?? 0, height: b.height ?? 0,
-        } as any);
-        (n?.children ?? []).forEach((c: any) => walk(c, depth + 1));
-      };
-      walk(root, 0);
-      return out.length ? out : null;
-    } catch { return null; }
-  };
-  const readDump = async (): Promise<U2Node[]> => {
-    const {execFile} = await import('node:child_process');
-    const {promisify} = await import('node:util');
-    const run = promisify(execFile);
-    const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
-    const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
-    const remote = '/sdcard/u2sem-dump.xml';
-    await run(adb, ['-s', serial, 'shell', `uiautomator dump --compressed ${remote}`], {timeout: 12_000, encoding: 'utf8'}).catch(() => null);
-    const {stdout} = await run(adb, ['-s', serial, 'shell', `cat ${remote}`], {timeout: 12_000, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024});
-    return parseU2Xml(stdout ?? '');
-  };
   const read = async (): Promise<U2Node[]> => {
-    const viaU2 = await readU2();
-    if (viaU2 && viaU2.length > 0) return viaU2;
-    return readDump();
+    const resp = await fetch(`http://127.0.0.1:${port}/jsonrpc/0`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'dumpWindowHierarchy', params: [true, 200, true] }),
+      signal: AbortSignal.timeout(options.readTimeoutMs ?? 15_000),
+    });
+    const data = (await resp.json()) as { result?: string };
+    return parseU2Xml(data.result ?? '');
   };
 
   const waitStable = async (rounds = 8): Promise<U2Node[]> => {
@@ -147,20 +104,10 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
   const find = async (pred: (n: U2Node) => boolean, timeoutMs = 20_000): Promise<U2Node | null> => {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
-      const ns = await waitStable(4);
-      // 正常路径优先：找到预期元素就直接返回，不做任何守卫判断（零额外开销、零误杀）。
+      const ns = await waitStable();
       const hit = ns.find(pred);
       if (hit) return hit;
-      // 只有“找不到预期元素”时才检查页面是否已偏离主链路；偏离则返回加速恢复（否则会一直空等超时）。
-      const guard = guardMainPath('meituan', ns.map(n => ({text: n.text, desc: n.desc})));
-      if (!guard.ok) {
-        const sample = ns.map(n => nodeLabel(n)).filter(Boolean).slice(0, 6);
-        console.log(`[meituan] 找不到目标且页面不在主链路(${guard.kind})，立即返回`, JSON.stringify(sample));
-        await options.back();
-        await sleep(300);
-        continue;
-      }
-      await sleep(150);
+      await sleep(450);
     }
     return null;
   };

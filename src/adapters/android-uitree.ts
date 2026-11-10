@@ -251,7 +251,7 @@ export class AndroidUiTreeReader {
     await this.ensure();
     const startedAt = Date.now();
     const response = await httpRequest(this.port, 'POST', '/jsonrpc/0', {
-      jsonrpc: '2.0', id: 1, method: 'dumpWindowHierarchy', params: [true, 50],
+      jsonrpc: '2.0', id: 1, method: 'dumpWindowHierarchy', params: [true, 200],
     }, this.requestTimeoutMs);
     if (response.status !== 200) throw new Error(`u2_http_${response.status}`);
     const payload = JSON.parse(response.text) as { result?: unknown; error?: { message?: string } };

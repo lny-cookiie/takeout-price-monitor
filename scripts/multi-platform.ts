@@ -3,6 +3,7 @@
 import {spawn, execSync} from 'node:child_process';
 import {mkdir, writeFile} from 'node:fs/promises';
 import {openSync, closeSync, statSync} from 'node:fs';
+import {request} from 'node:http';
 
 const TS = new Date().toISOString().replace(/[-:TZ]/g, '').slice(0, 6);
 const OUT = `.runtime/mp-${TS}`;
@@ -106,6 +107,29 @@ try {
 } catch (error) { log('清理失败（不阻塞）', (error as Error).message.slice(0,80)); }
 const results: Array<{name: string; code: number; seconds: number; business?: string}> = [];
 
+// 0 读屏基线：美团语义层依赖 u2 的 9008 端口，串行前必须先拉起 u2 + 端口转发并验证可达。
+async function ensureU2ForMeituan(): Promise<boolean> {
+  await adbShell(['shell', 'pkill', '-f', 'com.wetest.uia2']);
+  await new Promise(r => setTimeout(r, 1_200));
+  await adbShell(['forward', 'tcp:9008', 'tcp:9008']);
+  await new Promise(r => setTimeout(r, 500));
+  // 触发 u2 启动：通过 AndroidUiTreeReader 读一次树
+  const r = await runStep('u2boot', process.execPath, ['--env-file-if-exists=.env', 'node_modules/tsx/dist/cli.mjs', '.runtime/u2-start.ts'], 60_000, `${OUT}/u2boot.log`);
+  if (r.code !== 0) return false;
+  // 用 Node 的 http 从本机探测（手机端不一定有 curl，之前用它误判成 false）
+  return await new Promise<boolean>(resolve => {
+    const body = JSON.stringify({jsonrpc: '2.0', id: 1, method: 'dumpWindowHierarchy', params: [true, 200, false]});
+    const req = request({host: '127.0.0.1', port: 9008, path: '/jsonrpc/0', method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}, timeout: 8_000},
+      res => { let d = ''; res.on('data', c => (d += c)); res.on('end', () => resolve(res.statusCode === 200 && d.includes('result'))); });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.write(body); req.end();
+  });
+}
+const u2ready = await ensureU2ForMeituan();
+log('美团读屏基线(u2)', u2ready);
+
 // 1 美团
 await adbShell(['shell', 'am', 'start', '-n', 'com.sankuai.meituan/com.meituan.android.pt.homepage.activity.MainActivity']);
 let meituanReady = await waitAppForeground('com.sankuai.meituan');
@@ -117,7 +141,24 @@ if (!meituanReady) {
 log('美团前台就绪', meituanReady);
 const meituanResult = await runStep('meituan', process.execPath, ['--env-file-if-exists=.env', 'node_modules/tsx/dist/cli.mjs', '.runtime/meituan-v10.ts'], 180_000, `${OUT}/meituan.log`);
 results.push(meituanResult);
-if (meituanResult.code !== 0) { log('美团失败，停止串行（不继续下一个平台）'); await writeFile(`${OUT}/summary.jsonl`, results.map(r=>JSON.stringify(r)).join('\n')+'\n'); process.exit(1); }
+// 串行铁律：一个平台没取到数就不开始下一个。exit code 0 不代表业务成功，必须校验业务字段。
+async function businessOk(platform: 'meituan' | 'taobao' | 'jd', logPath: string): Promise<boolean> {
+  try {
+    const {readFile} = await import('node:fs/promises');
+    const text = await readFile(logPath, 'utf8');
+    if (platform === 'meituan') {
+      // 美团成功标志：结算字段里读到券前价
+      const m = text.match(/结算字段 (\{[^}]*\})/);
+      if (!m) return false;
+      return /券前|商品原价/.test(m[1]);
+    }
+    if (platform === 'jd') return /"amountFen":\s*\d+/.test(text);
+    return /结算页截图已保存|fields/i.test(text);
+  } catch { return false; }
+}
+const meituanBizOk = meituanResult.code === 0 && await businessOk('meituan', `${OUT}/meituan.log`);
+results[0] = {...meituanResult, business: meituanBizOk ? 'ok' : 'failed'};
+if (!meituanBizOk) { log('美团未取到业务数据，停止串行（不继续下一个平台）'); await writeFile(`${OUT}/summary.jsonl`, results.map(r=>JSON.stringify(r)).join('\n')+'\n'); process.exit(1); }
 
 // 2 淘宝闪购
 await adbShell(['shell', 'monkey', '-p', 'com.taobao.taobao', '-c', 'android.intent.category.LAUNCHER', '1']);
