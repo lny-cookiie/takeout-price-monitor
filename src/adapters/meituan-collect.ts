@@ -222,8 +222,24 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   step('搜索结果页门店卡（视觉兜底）');
   // 层级 1：语义精确门店卡（desc 通常带评分/配送费，长度明显更长）；
   // 层级 2：视觉定位。搜索联想词（如“麦当劳＆麦咖啡外卖点击可发起搜索”）不能用语义命中。
+  // 搜索结果页是原生页面（实测 read 可读到“麦当劳/评分/月售”），语义优先；视觉仅兜底。
+  // 之前只匹配“品牌+麦咖啡”过窄，导致可用语义命中被浪费、被迫依赖不稳定的视觉模型。
   const storeCardExact = await semantic.find(
-    n => nodeLabel(n).includes(brand) && nodeLabel(n).includes('麦咖啡') && /分|评分|配送|起送|\d\.\d/.test(nodeLabel(n)),
+    n => {
+      const l = nodeLabel(n);
+      if (!l.includes(brand)) return false;
+      // 排除搜索框/历史词/推荐词这类非门店节点
+      if (/进入搜索|搜索框|历史|猜你想|为你推荐/.test(l)) return false;
+      return /分|评分|配送|起送|\d+\.\d+|月售|km|进店/.test(l);
+    },
+    8_000,
+  ) ?? await semantic.find(
+    n => {
+      const l = nodeLabel(n);
+      if (!l.includes(brand)) return false;
+      if (/进入搜索|搜索框|历史|猜你想/.test(l)) return false;
+      return n.top > 200; // 门店卡在页面中下部
+    },
     6_000,
   );
   if (storeCardExact) {
@@ -234,7 +250,9 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     // 门店名文字本身可能只是选中卡片而不跳转，真正进店的是卡片上的“进店”按钮。
     // 策略：优先点“进店”按钮，没有才退回点门店名；点完都要等页面跳转。
     const enterBtn = await options.visualLocate(`搜索结果门店卡片右侧的“进店”按钮`);
+    console.log('[meituan] 视觉-进店按钮', enterBtn ? `dp ${enterBtn.x.toFixed(0)},${enterBtn.y.toFixed(0)}` : 'null');
     const cardHit = enterBtn ?? await options.visualLocate(`搜索结果里“${brand}”这三个字所在的门店名称那一行（形如 ${brand}(某某店)）`);
+    console.log('[meituan] 视觉-门店名', cardHit ? `dp ${cardHit.x.toFixed(0)},${cardHit.y.toFixed(0)}` : 'null');
     if (!cardHit) throw new Error('meituan_store_card_unlocated');
     await options.tapPoint(cardHit.x, cardHit.y);
     await sleep(2_800);
