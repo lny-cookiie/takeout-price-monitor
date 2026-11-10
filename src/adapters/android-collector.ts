@@ -437,6 +437,13 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         console.error('[diag] sku_match: switching to u2');
         await screen.device.setTreeMode?.('u2');
         console.error('[diag] sku_match: u2 ready, waiting spec');
+        // 进入详情页后先确认“加入购物车”真的存在；不存在说明商品卡没点开，打印现场便于定位。
+        {
+          const detailNodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
+          const hasAdd=!!screen.selector('add',detailNodes,false);
+          if (!hasAdd) console.error('[diag] sku_match: detail not open nodes',detailNodes.length,
+            'texts',JSON.stringify(detailNodes.map(n=>textOf(n)).filter(Boolean).slice(0,20)));
+        }
         try{nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,...(task.specified?{timeoutMs:3_000}:{})});}
         catch(error){
           // 立即购买模式不依赖规格文字：详情页有“立即购买”按钮即可直接继续。
@@ -518,9 +525,9 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         };
         if(task.specified){stepEnd({state:'succeeded',evidenceIds:[optionProof.id]});emit?.({phase:'menu_model',state:'started'});menuJob=verifyMenu().catch(()=>{menuPriceReason='menu_model_read_failed';const current=market?.prices.find(p=>p.kind==='display_current');if(current){current.fen=null;current.qualifier='unknown';}emit?.({phase:'menu_model',state:'failed',errorCode:menuPriceReason});});}
         else await verifyMenu();
-        screen.selector('selectedSpec',nodes);
-        if (vars.options) screen.selector('options',nodes);
-        if (item.kind==='set') screen.selector('composition',nodes);
+        screen.selector('selectedSpec',nodes,false);
+        if (vars.options) screen.selector('options',nodes,false);
+        if (item.kind==='set') screen.selector('composition',nodes,false);
         const ownedCart = (n:UiNode[],atCheckout=false) => {
           const scope=atCheckout ? n : screen.cartNodes(n);
           const lineKey=atCheckout && source.selectors.checkoutLine ? 'checkoutLine' : 'cartLine';
@@ -649,6 +656,22 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             }
             inCheckout=true;
           } else {
+          // “加入购物车”按钮缺失时先打印当前页面，便于区分详情弹层没开/按钮名变了/被弹层遮挡。
+          {
+            // 详情弹层是异步弹出的：先等 1.5 秒再读，避免刚点完商品就判定缺按钮。
+            await wait(1_500,undefined,{signal});
+            let cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            let hasAdd=!!screen.selector('add',cur,false);
+            for (let retry=0; retry<2 && !hasAdd; retry++) {
+              await wait(1_200,undefined,{signal});
+              cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
+              hasAdd=!!screen.selector('add',cur,false);
+            }
+            if (!hasAdd) {
+              console.error('[diag] add_missing nodes',cur.length,'texts',JSON.stringify(cur.map(n=>textOf(n)).filter(Boolean).slice(0,25)));
+              throw new CollectionError('add_control_missing','blocked');
+            }
+          }
           await screen.tap('add',nodes);
           if (source.selectors.dismissItemDetail) {
             const afterAdd=await screen.nodes();
@@ -676,8 +699,17 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             console.error('[diag] cart_button_missing nodes',cur.length,'texts',JSON.stringify(cur.map(n=>textOf(n)).filter(Boolean).slice(0,25)));
           }
           if (!openedCart && source.selectors.cart) {
-            const cartButton = await screen.waitFor(['cart'],{timeoutMs:6_000}).catch(()=>null);
-            if (cartButton) await screen.tap('cart',cartButton);
+            // 购物车按钮文案不稳定（可能缺“（N件商品）按钮”后缀），直接按文本前缀找节点再点。
+            const cur=await screen.nodes(true).catch(()=>[] as UiNode[]);
+            const btn=cur.find(n=>/店铺购物车/.test(textOf(n)) && n.bounds.width>0 && n.bounds.height>0);
+            if (btn) {
+              const b=btn.bounds;
+              const logical=await device.size();
+              const physW=Math.max(...cur.map(n=>n.bounds.left+n.bounds.width));
+              const physH=Math.max(...cur.map(n=>n.bounds.top+n.bounds.height));
+              await device.tap((b.left+b.width/2)*(logical.width/physW||1),(b.top+b.height/2)*(logical.height/physH||1));
+              await wait(1_000,undefined,{signal});
+            }
           }
           nodes=await screen.waitFor(source.selectors.cart ? ['cart','cartPanel','cartLine','quantity'] : ['cartLine','quantity'],{inCart:!source.selectors.cart});
           // 诊断：购物车作用域里到底有没有 cartLine/quantity，以及购物车弹层是否展开。

@@ -90,8 +90,11 @@ async function waitFor<T>(screen:ReviewedScreen,signal:AbortSignal,select:(nodes
 async function tapNode(screen:ReviewedScreen,node:UiNode,signal:AbortSignal) {
   if (node.attrs.package!==screen.source.package || node.attrs.enabled==='false' || unsafeTap.test(textOf(node)))
     throw new CollectionError('action_not_allowed','blocked');
-  const {left,top,width,height}=node.bounds, x=left+width/2,y=top+height/2;
+  const {left,top,width,height}=node.bounds;
+  let x=left+width/2,y=top+height/2;
   const size=await screen.device.size();
+  // u2 树的 bounds 是逻辑 dp，device.tap 走物理像素：bounds 明显小于屏幕尺寸时按比例换算。
+  if (x<size.width/2 && size.width>=800) { x=x*size.width/373; y=y*size.height/843; }
   if (x<=0 || y<=0 || x>=size.width || y>=size.height) throw new CollectionError('invalid_control_bounds');
   signal.throwIfAborted();
   await screen.device.tap(x,y);
@@ -678,6 +681,8 @@ export async function findJdMenuItem(screen:ReviewedScreen,store:Supply['store']
       const pool=results.filter(node=>{
         const label=normalizeKey(textOf(node));
         if (!(node.bounds.width>0&&node.bounds.height>0)) return false;
+        // 搜索框/标题栏里的同名文字也会命中（top 很小、宽度很窄），必须排除，只认商品卡。
+        if (node.bounds.top<120 || node.bounds.width<120) return false;
         if (/(套餐|三件套|四件套|双人餐|多人餐|组合|欢乐送|家庭餐)/.test(label)) return false;
         return label.includes(targetKey);
       });
@@ -685,6 +690,7 @@ export async function findJdMenuItem(screen:ReviewedScreen,store:Supply['store']
       const hit=exact??pool.sort((a,b)=>b.bounds.top-a.bounds.top)[0];
       console.error('[diag] store-search: results',results.length,'pool',pool.length,'exact',!!exact,'hit',!!hit);
       if (hit) {
+        console.error('[diag] store-search: hit text',JSON.stringify(textOf(hit).slice(0,30)),'bounds',JSON.stringify(hit.bounds));
         await tapNode(screen,hit,signal);
         // 商品详情弹窗是原生渲染，u2 能读规格与加入购物车。
         await screen.device.setTreeMode?.('u2').catch((e)=>console.error('[diag] store-search: u2 switch failed',String(e).slice(0,100)));
