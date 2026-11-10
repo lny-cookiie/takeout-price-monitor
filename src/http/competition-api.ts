@@ -1,3 +1,4 @@
+import {readFile} from 'node:fs/promises';
 import { proposeMapping, rankCandidates } from '../application/matching.js';
 import { PLATFORMS, type Platform } from '../domain/contracts.js';
 import { array, boolean, candidateSchema, meals, number, object, orderSchema, planSchema, profileSchema, string, validator,
@@ -63,6 +64,16 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
       const all = comparisonRows(slots), rows = selectRows(all,q);
       if (path.endsWith('.csv')) reply(200,csv(rows,run,url.origin),'text/csv; charset=utf-8');
       else reply(200,{mode,run:run ?? null,runs,rows,facets:all.map(({city,brand,store,item,spec,profile,meal})=>({city,brand,store,item,spec,profile,meal})), stats:summarizeBatch(slots,all)});
+      return true;
+    }
+    if (method==='GET' && path==='/api/market/live-progress') {
+      // 采集实时进度：读取脚本写的 progress 文件，前端轮询渲染进度条
+      try {
+        const raw = await readFile('.runtime/live-progress.json','utf8');
+        reply(200, JSON.parse(raw));
+      } catch {
+        reply(200, {platform:null,node:null,index:0,total:8,percent:0,state:'idle'});
+      }
       return true;
     }
     if (method==='GET' && path==='/api/market/records') {

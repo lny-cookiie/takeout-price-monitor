@@ -133,6 +133,10 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   const step = (name: string) => {
     steps.push(name);
     console.log(`[meituan] step ${steps.length}: ${name}`);
+    // 实时进度上报：前端轮询 /api/market/live-progress 渲染进度条
+    import('./live-progress.js')
+      .then(m => m.reportProgress({platform: 'meituan', node: name, state: 'running'}))
+      .catch(() => undefined);
   };
   // 首页特征：用最稳的两个标志——美团自营“小象超市”入口 + 顶部“搜索”按钮。
   // 不依赖“团购/推荐”这类会随滚动、活动位、文案改版而消失的节点。

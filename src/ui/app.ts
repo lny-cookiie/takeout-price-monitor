@@ -363,3 +363,36 @@ setInterval(()=>{
   if(page==='records' && section==='collection' && (!runReport || runReport.state==='queued' || runReport.state==='running'))void refreshRun();
 },3000);
 void workspace().then(refreshComparison).catch(e=>{app.innerHTML=`<main class="content"><h1>无法连接工作台</h1><p class="muted">${h(e.message)}</p></main>`;});
+
+
+// 实时采集进度轮询：每 2 秒拉一次 /api/market/live-progress，更新首页进度条。
+async function pollLiveProgress() {
+  const box = document.getElementById('live-progress');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/market/live-progress', {cache: 'no-store'});
+    const data = await res.json() as {platform?: string|null; node?: string|null; index?: number; total?: number; percent?: number; state?: string; message?: string};
+    const idx = Number(data.index ?? 0), pct = Number(data.percent ?? 0);
+    const fill = box.querySelector<HTMLElement>('[data-live-fill]');
+    const status = box.querySelector<HTMLElement>('[data-live-status]');
+    const text = box.querySelector<HTMLElement>('[data-live-text]');
+    if (fill) fill.style.width = pct + '%';
+    if (status) {
+      status.textContent = data.state === 'completed' ? '已完成'
+        : data.state === 'failed' ? '失败'
+        : data.state === 'running' ? '采集中'
+        : '待开始';
+    }
+    if (text) {
+      text.textContent = data.state === 'failed' ? '采集失败：' + (data.message ?? '未知原因')
+        : data.node ? `当前进度：${data.node}（${pct}%）`
+        : '当前没有正在进行的采集。';
+    }
+    box.querySelectorAll<HTMLElement>('[data-live-node]').forEach((li, i) => {
+      li.classList.toggle('is-done', i < idx);
+      li.classList.toggle('is-current', i === idx && data.state === 'running');
+      li.classList.toggle('is-failed', i === idx && data.state === 'failed');
+    });
+  } catch { /* 轮询失败静默，不影响主流程 */ }
+}
+setInterval(pollLiveProgress, 2000);

@@ -89,6 +89,19 @@ export const definitions = (items:[string,unknown][]) => '<dl>'+items.map(([a,b]
 export const proofPath = (e?:Evidence|null) => e && /^\/api\/evidence\/[a-f0-9-]{36}\.png$/.test(e.screenshot) ? e.screenshot : '';
 export const proofLink = (e?:Evidence|null,text='查看截图') => proofPath(e) ? `<a href="${proofPath(e)}" target="_blank" rel="noopener">${h(text)}</a>` : '';
 
+// 实时采集进度条：轮询 /api/market/live-progress，展示采集脚本当前走到第几个节点。
+const LIVE_NODES = ['进入首页','打开外卖频道','搜索品牌名','进入门店结果页','进入店铺','定位爆品','加购结算','采数完成'];
+
+export function liveProgressBar():string {
+  const nodes = LIVE_NODES.map((label,i)=>`<li data-live-node="${i}"><span class="dot">${i+1}</span><span class="label">${h(label)}</span></li>`).join('');
+  return `<div class="collect-progress" id="live-progress" data-live-progress role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+    <div class="collect-progress-head"><strong data-live-title>采集进度</strong><span data-live-status class="muted">待开始</span></div>
+    <div class="collect-progress-track"><div class="collect-progress-fill" data-live-fill style="width:0%"></div></div>
+    <ol class="collect-progress-nodes">${nodes}</ol>
+    <p class="collect-progress-text" data-live-text>当前没有正在进行的采集。</p>
+  </div>`;
+}
+
 export function comparison(ws:Workspace,batch:Batch|undefined,mode:string,query:URLSearchParams,menu:boolean,advanced:boolean) {
   const demo=mode==='synthetic', platforms=demo ? ws.platforms.filter(p=>p.id!=='jd') : ws.platforms;
   const showDifference=!demo && !menu;
@@ -97,7 +110,7 @@ export function comparison(ws:Workspace,batch:Batch|undefined,mode:string,query:
   const switcher=tabs(mode,[['live','实际数据'],['synthetic','模拟演练']],'mode');
   const sample=demo ? '<p class="notice">使用内置的美团和淘宝闪购测试页面演练，无需京东资料、手机或平台账号。报价、店铺和截图均为演练数据。</p>'+
     (batch?.stats.pending ? button('fixture-run','正在模拟采集…',true,'disabled') : button('fixture-run','运行模拟采集',true)) : '';
-  if (!batch) return title+switcher+sample+panel('<p class="muted">正在读取监测数据…</p>');
+  if (!batch) return liveProgressBar()+title+switcher+sample+panel('<p class="muted">正在读取监测数据…</p>');
   const dims = [['city','城市'],['brand','品牌'],['store','门店'],['item','商品'],['spec','规格'],['profile','配送与账号'],['meal','用餐时段']] as const;
   const filter = batch.runs.length ? panel(`<div class="filters">
     ${field('监测批次',select('run',[['','最近一次'],...batch.runs.map(r=>[r.id,r.label+' · '+time(r.created_at)] as [string,string])],query.get('run') ?? ''),'wide')}
