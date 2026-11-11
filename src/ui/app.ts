@@ -1,6 +1,6 @@
 import type { Candidate, Eligibility, OrderImport, Plan, Profile } from '../domain/competition.js';
 import type { Platform } from '../domain/contracts.js';
-import { type Batch, type Page, type Records, type Workspace, button, comparison, h, idAttr, label, pages, quoteDetails, reason } from './presentation.js';
+import { type Batch, type Page, type Records, type Workspace, button, comparison, h, idAttr, label, navPages, pages, quoteDetails, reason } from './presentation.js';
 import { jdCsvTemplate, parseOrderCsv } from './jd-import.js';
 import { type CollectionRun, renderRun } from './jd-runs.js';
 import { candidateForm, dataRecords, mappingReview, settings, type ImportFile } from './settings.js';
@@ -103,7 +103,7 @@ function navigate(next:Page,tab?:string) {
 function render() {
   if(!ws)return;
   app.innerHTML=`<header class="header"><div class="header-inner"><span class="brand">外卖竞争监测</span><nav aria-label="主要导航">
-    ${Object.entries(pages).map(([id,t])=>`<button data-action="nav" ${idAttr(id)} ${id===page?'aria-current="page"':''}>${t}</button>`).join('')}${ws.ueWorkspacePath?`<a href="${h(ws.ueWorkspacePath)}" style="align-self:center;padding:8px 16px">包销 UE 工作台</a>`:''}</nav></div></header>
+    ${navPages.map(id=>`<button data-action="nav" ${idAttr(id)} ${id===page?'aria-current="page"':''}>${pages[id]}</button>`).join('')}${ws.ueWorkspacePath?`<a href="${h(ws.ueWorkspacePath)}" style="align-self:center;padding:8px 16px">包销 UE 工作台</a>`:''}</nav></div></header>
     <main class="content">${page==='compare'?comparison(ws,batch,mode,query(),menu,advanced):page==='settings'?settings(ws,section,profile,plan,jdSubmitting,selectedJdStore):dataRecords(ws,section,records,imported,modelReport,deviceReport,recordRunId,runDetailMarkup(),recordsSelection===recordRunId && !runReport?.slots.some(slot=>slot.kind==='shelf'))}</main>`;
 }
 function showDialog(title:string,body:string) {

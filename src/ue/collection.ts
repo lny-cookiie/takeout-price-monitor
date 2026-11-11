@@ -21,7 +21,12 @@ export function collectionPanel(next:Tab){tab=next;if(!ws&&!loading&&!error)void
 function catalog(){return panel('包销品清单',`<p class="subtitle">保存一次，后续直接选品采集。一行是一家门店的一款商品，数量固定为一份。</p>
   <div class="actions"><a href="/api/market/catalog/template.csv" download="包销品清单.csv">下载 CSV 模板</a>${btn('import','导入清单')}${btn('trial','添加试采商品')}${btn('map','页面取数地图')}</div>
   ${table(['城市 / 区县','品牌 / 分店','商品 / 规格','来源与版本','操作'],entries.map(e=>`<tr><td>${h(e.city)}<span class="secondary">${h(e.district)}</span></td><td>${h(e.brand)}<span class="secondary">${h(e.storeName)}</span></td><td>${h(e.itemName)}<span class="secondary">${h(e.spec)}</span></td><td>${h(label(e))}<span class="secondary">${h(e.sourceVersion)} · ${h(time(e.importedAt))}</span></td><td>${btn('select','去采集',e.id,!eligible(e))} ${btn('quote','查看报价',e.id)}</td></tr>`))}`);}
-function collect(){const source=ws?.platforms.find(p=>p.id==='jd'),e=entries.find(e=>e.id===selected);return panel('竞对采集',`
+function collect(){
+  // 采数入口统一在 /bd（BD 报价采集）；这里只保留查看与跳转，避免两处都能发起采集造成重复。
+  return panel('竞对采集',`<div class="notice">采集已统一到「BD 报价采集」页面发起。这里只查看已采集的结果与记录。</div>
+  <div class="actions"><a class="primary btn" href="/bd">去 BD 报价采集</a><a href="#records" data-action="data-tab" data-id="records">查看采集记录</a></div>`);
+}
+function collectLegacy(){const source=ws?.platforms.find(p=>p.id==='jd'),e=entries.find(e=>e.id===selected);return panel('竞对采集',`
   <form id="catalog-run" class="collection-form"><label>门店与指定商品<select name="target" required aria-label="门店与指定商品"><option value="">请选择清单商品</option>${entries.filter(eligible).map(v=>`<option value="${v.id}" ${v.id===selected?'selected':''}>${h(v.storeName+' · '+v.itemName+' · '+v.spec)}</option>`).join('')}</select></label>
   <label>配送地址与测试账号<select name="profile" required aria-label="配送地址与测试账号"><option value="">请选择已保存的条件</option>${ws?.profiles.filter(p=>p.eligibility.jd).map(p=>`<option value="${h(p.id)}" ${p.id===profile?'selected':''}>${h(p.name+' · '+p.point)}</option>`).join('')??''}</select></label>
   ${e?.source==='trial'?`<label class="checkbox"><input type="checkbox" name="allowCouponCheckout" ${couponConsent?'checked':''}>仅本机试采：允许点击“领券结算”。可能领券并改变优惠条件，任务会单独记录。</label>`:''}

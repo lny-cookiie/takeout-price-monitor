@@ -25,7 +25,10 @@ export interface Records {
   trial:{name:string;expected:number;stats:Stats;manualMinutes:number|null;executionMinutes:number;modelCostPerQuote:number|null}[];
   modelCalls:{operation:string;ok:boolean;model:string;ms:number;inputTokens:number|null;outputTokens:number|null}[];
 }
+// 采数工具统一在 /bd。旧的“三平台对比”已下线：这里保留键以维持类型完整，但导航栏不再展示（见 navPages）。
 export const pages:Record<Page,string> = {compare:'三平台对比',settings:'监测设置',records:'数据记录'};
+/** 导航栏实际展示的页面（已移除三平台对比） */
+export const navPages:Page[] = ['settings','records'];
 export const mealNames:Record<Meal,string> = {lunch:'午餐',dinner:'晚餐',night:'夜宵'};
 const states:Record<string,string> = {
   not_collected:'未采集',queued:'待采集',running:'采集中',success:'已取得报价',partial:'部分费用未取得',

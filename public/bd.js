@@ -15,17 +15,38 @@ function renderSummary(payload,platforms){summary.innerHTML=`<div><span>城市 /
 function setRun(platform,state,percent,label){const row=document.getElementById('run-'+platform);if(!row)return;row.className='platform-run '+state;row.querySelector('.pr-bar i').style.width=percent+'%';row.querySelector('.pr-state').textContent=label;}
 function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 // 接后端时替换这里：POST /api/market/runs 返回 runId，再用 /api/market/runs/{id} 轮询。
-async function startCollection(payload){return {ok:true};}
-async function runPlatform(platform,payload){const stages=PLATFORMS[platform].stages;
-  if(platform!=='jd'){setRun(platform,'failed',100,'未接入');addLog(`${PLATFORMS[platform].name}：接口尚未接入，跳过采集`);failedPlatforms.add(platform);return false;}
-  for(let i=0;i<stages.length;i++){
-    setRun(platform,'running',Math.round((i+1)/stages.length*100),stages[i]);
-    addLog(`${PLATFORMS[platform].name} · ${stages[i]}`);
-    await sleep(420+Math.random()*380);
-    // 原型演示：约一成概率模拟失败，用来验证失败提示与重跑入口
-    if(Math.random()<0.12){setRun(platform,'failed',Math.round((i+1)/stages.length*100),'失败');addLog(`${PLATFORMS[platform].name} · 采集失败：页面状态异常（原型模拟）`);failedPlatforms.add(platform);return false;}
+async function startCollection(payload,platforms){
+  const res = await fetch('/api/bd/runs',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({city:payload.city,brand:payload.brand,store:payload.store||'',item:payload.item,platforms})});
+  const data = await res.json().catch(()=>({error:'bad_response'}));
+  if(!res.ok) throw new Error(data.message||data.error||('HTTP '+res.status));
+  return data;
+}
+// 轮询一次采集运行的进度（真实后端）
+async function pollRun(runId){
+  const res = await fetch('/api/market/runs/'+encodeURIComponent(runId),{cache:'no-store'});
+  if(!res.ok) return null;
+  return res.json();
+}
+const STAGE_LABELS={home:'进入首页',takeout:'打开外卖频道',search:'搜索品牌名',results:'进入门店结果页',store:'进入店铺',item:'定位爆品',cart:'加购结算',done:'采数完成'};
+async function runPlatform(platform,payload,runId,state){
+  if(!runId||state==='not_integrated'){setRun(platform,'failed',100,state==='not_integrated'?'未接入':'未启动');addLog(`${PLATFORMS[platform].name}：${state==='not_integrated'?'采集链路尚未接入调度':'任务未创建'}`);failedPlatforms.add(platform);return false;}
+  setRun(platform,'running',5,'已提交');
+  let last='';
+  for(let i=0;i<120;i++){
+    const data=await pollRun(runId).catch(()=>null);
+    if(!data){await sleep(1000);continue;}
+    const steps=(data.slots||[]).flatMap(s=>(s.attempts||[]).map(a=>({state:a.state,phases:(a.steps||[]).map(x=>x.phase||x.name)})));
+    const phases=steps.flatMap(s=>s.phases||[]).map(String);
+    const percent=Math.min(95,Math.round(phases.length/8*95));
+    const label=(phases.length?STAGE_LABELS[phases[phases.length-1]]:null)||'采集中';
+    if(label!==last){last=label;setRun(platform,'running',percent,label);addLog(`${PLATFORMS[platform].name} · ${label}`);}
+    const done=steps.find(s=>s.state==='succeeded'), bad=steps.find(s=>s.state==='failed');
+    if(bad){setRun(platform,'failed',percent,'失败');addLog(`${PLATFORMS[platform].name} · 采集失败`);failedPlatforms.add(platform);return false;}
+    if(done){setRun(platform,'success',100,'完成');addLog(`${PLATFORMS[platform].name} · 采集完成`);return true;}
+    await sleep(1500);
   }
-  setRun(platform,'success',100,'完成');addLog(`${PLATFORMS[platform].name} · 采集完成：应付 ¥21.10、商品金额 ¥26.00、优惠 ¥12.00、运费 ¥3.00（原型模拟数据）`);return true;}
+  setRun(platform,'failed',100,'超时');addLog(`${PLATFORMS[platform].name} · 等待超时`);failedPlatforms.add(platform);return false;}
 form.addEventListener('submit',async event=>{event.preventDefault();if(busy)return;
   const data=new FormData(form),payload={city:String(data.get('city')||'').trim(),brand:String(data.get('brand')||'').trim(),store:String(data.get('store')||'').trim(),item:String(data.get('item')||'').trim()};
   const platforms=[...form.querySelectorAll('input[name="platform"]:checked')].map(input=>input.value);
@@ -33,8 +54,12 @@ form.addEventListener('submit',async event=>{event.preventDefault();if(busy)retu
   if(!platforms.length){toast('至少选择一个采集平台');return;}
   lastPayload=payload;busy=true;startBtn.disabled=true;startBtn.textContent='采集中…';resetRunView();runPanel.hidden=false;stateEl.textContent='采集中';
   renderSummary(payload,platforms);addLog(`开始采集：${payload.city} / ${payload.brand} / ${payload.item}，平台 ${platforms.map(p=>PLATFORMS[p].name).join('、')}`);
-  const started=Date.now();await startCollection(payload);
-  for(const platform of platforms)await runPlatform(platform,payload);
+  const started=Date.now();
+  let created={platforms:[]};
+  try{created=await startCollection(payload,platforms);}
+  catch(e){toast('提交失败：'+e.message);busy=false;startBtn.disabled=false;startBtn.textContent='开始采集';addLog('提交失败：'+e.message);return;}
+  if(created.matched)addLog(`匹配到：${created.matched.storeName} · ${created.matched.itemName}`);
+  for(const platform of platforms){const r=(created.platforms||[]).find(x=>x.platform===platform)||{};await runPlatform(platform,payload,r.runId,r.state);}
   busy=false;startBtn.disabled=false;startBtn.textContent='开始采集';
   const ok=platforms.length-failedPlatforms.size;stateEl.textContent=failedPlatforms.size?'部分失败':'采集完成';
   addLog(`本次采集结束：成功 ${ok}/${platforms.length}，用时 ${((Date.now()-started)/1000).toFixed(1)} 秒（原型模拟）`);

@@ -2,7 +2,7 @@ import {readFile} from 'node:fs/promises';
 import { proposeMapping, rankCandidates } from '../application/matching.js';
 import { PLATFORMS, type Platform } from '../domain/contracts.js';
 import { array, boolean, candidateSchema, meals, number, object, orderSchema, planSchema, profileSchema, string, validator,
-  type Candidate, type Mapping, type Meal, type OrderImport, type Plan, type Profile, type Target } from '../domain/competition.js';
+  enumOf, type Candidate, type Mapping, type Meal, type OrderImport, type Plan, type Profile, type Target } from '../domain/competition.js';
 import { comparisonRows, csv, selectRows, summarizeBatch } from '../application/comparison.js';
 import { dayInShanghai } from '../application/scheduler.js';
 import { platformNames } from '../domain/competition.js';
@@ -172,6 +172,42 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
     }
     if (method==='PUT' && path==='/api/market/plans') {
       const p = store.savePlan(planCheck(await body())); tick(); reply(200,p); return true;
+    }
+    if (method==='POST' && path==='/api/bd/runs') {
+      // BD 采数入口：按 城市/品牌/门店/爆品 匹配已登记商品，创建真实采集任务并落库。
+      const input = validator<{city:string;brand:string;store?:string;item:string;platforms:string[]}>(
+        object({city:string(40),brand:string(60),store:string(120,0),item:string(80),
+          platforms:array(string(30),3,1)},['city','brand','item','platforms']),'BD 采集请求')(await body(200_000));
+      const norm=(v:string)=>String(v||'').replace(/\s+/g,'').replace(/[（(].*?[)）]/g,'').replace(/&/g,'');
+      const cat = store.catalog();
+      const hit = cat.find(e=>(!input.city || norm(e.city).includes(norm(input.city))) &&
+        norm(e.brand).includes(norm(input.brand)) &&
+        (!input.store || norm(e.storeName).includes(norm(input.store))) &&
+        norm(e.itemName).includes(norm(input.item)));
+      if (!hit) { reply(404,{error:'no_matching_catalog_entry',message:'没有匹配的已登记商品，请先在 UE 工作台导入包销品清单'}); return true; }
+      const profiles = store.list<Profile>('market_profiles');
+      const profile = profiles.find(p=>p.eligibility.jd) ?? profiles[0];
+      if (!profile) { reply(400,{error:'no_profile',message:'没有可用的配送地址与测试账号条件'}); return true; }
+      const valid = input.platforms.filter(p=>(PLATFORMS as readonly string[]).includes(p));
+      if (!valid.length) { reply(400,{error:'no_valid_platform',message:'请至少选择一个有效平台'}); return true; }
+      const result: {platform:string;runId?:string;state:string;message?:string}[] = [];
+      for (const platform of valid) {
+        if (platform === 'jd') {
+          try {
+            const requestId = crypto.randomUUID();
+            store.startSpecifiedRun({requestId, targetId:hit.id, profileId:profile.id});
+            result.push({platform, runId:requestId, state:'queued'});
+          } catch (e) {
+            result.push({platform, state:'failed', message:(e as Error).message.slice(0,160)});
+          }
+        } else {
+          // 美团/淘宝闪购的真实采集链路尚未接入本调度器，明确返回未接入，不返回假数据。
+          result.push({platform, state:'not_integrated', message:'该平台的采集链路尚未接入调度，暂不能从这里发起'});
+        }
+      }
+      tick();
+      reply(201,{matched:{id:hit.id,storeName:hit.storeName,itemName:hit.itemName,city:hit.city},profile:{id:profile.id,name:profile.name},platforms:result});
+      return true;
     }
     if (method==='POST' && path==='/api/market/runs') {
       const input = validator<{planId:string;meal:Meal;platform?:Platform}>(object({planId:string(60),meal:{type:'string',enum:Object.keys(meals)},
