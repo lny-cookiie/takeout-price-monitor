@@ -7,6 +7,7 @@ import { BrowserPool } from '../infra/browser.js';
 import { EvidenceStore } from '../infra/evidence.js';
 import { sourceFingerprint } from '../infra/fingerprint.js';
 import { meituanCollector, taobaoCollector } from '../adapters/fixture-collector.js';
+import { liveMeituanCollector } from '../adapters/meituan-collector.js';
 import { Scheduler, scenarioLabels } from '../application/scheduler.js';
 import { summarize } from '../application/summary.js';
 import { STORES, fixtureQuote } from '../domain/catalog.js';
@@ -117,6 +118,10 @@ export async function createApplication(options: { root?: string; dataDir?: stri
   if (!address || typeof address === 'string') throw new Error('listen_failed');
   baseUrl = `http://127.0.0.1:${address.port}`;
   const android=PLATFORMS.map((platform):Collector=>{
+    // 美团走专用采集器（navigateMeituan 全链路 + 结算字段解析），其余平台走通用 androidCollector。
+    if (platform === 'meituan') {
+      return liveMeituanCollector({sources, model, evidence, connect: options.androidTransport});
+    }
     const adapter=androidCollector(platform,sources,model,evidence,id=>market.cost(id),options.androidTransport,task=>market.mappingCurrent(task),{openJdStore,findJdMenuItem,returnToJdMenu});
     if (platform!=='jd') return adapter;
     return {...adapter,async collect(task,attemptId,signal,attemptNumber,emit) {

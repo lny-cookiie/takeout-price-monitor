@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import { proposeMapping, rankCandidates } from '../application/matching.js';
 import { PLATFORMS, type Platform } from '../domain/contracts.js';
@@ -200,9 +201,25 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
           } catch (e) {
             result.push({platform, state:'failed', message:(e as Error).message.slice(0,160)});
           }
+        } else if (platform === 'meituan') {
+          try {
+            const planId = createHash('sha256').update(['bd',hit.id,'meituan'].join('|')).digest('hex');
+            const existingPlan = (store.list<Plan>('market_plans') as Plan[]).find(p=>p.id===planId);
+            if (!existingPlan) {
+              store.savePlan({id:planId, name:`BD 美团采集 · ${hit.itemName}`, targetIds:[hit.id], profileId:profile.id,
+                quantity:1, startDate:new Date().toISOString().slice(0,10), days:1,
+                times:{lunch:'11:00',dinner:'17:00',night:'21:00'}, enabled:true});
+            }
+            const hour=Number(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',hour:'numeric',hourCycle:'h23'}).format(new Date()));
+            const meal = (hour<16?'lunch':hour<21?'dinner':'night') as 'lunch'|'dinner'|'night';
+            const run = store.runNow(planId, meal, 'meituan');
+            result.push({platform, runId:String(run), state:'queued'});
+          } catch (e) {
+            result.push({platform, state:'failed', message:(e as Error).message.slice(0,160)});
+          }
         } else {
-          // 美团/淘宝闪购的真实采集链路尚未接入本调度器，明确返回未接入，不返回假数据。
-          result.push({platform, state:'not_integrated', message:'该平台的采集链路尚未接入调度，暂不能从这里发起'});
+          // 淘宝闪购的真实采集链路尚未接入调度器，明确返回未接入，不返回假数据。
+          result.push({platform, state:'not_integrated', message:'淘宝闪购的采集链路尚未接入调度，暂不能从这里发起'});
         }
       }
       tick();
