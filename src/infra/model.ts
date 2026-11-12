@@ -39,7 +39,7 @@ export class ModelGateway {
   }
   async json<T>(scope: string, operation: string, instruction: string, data: unknown, check: (v: unknown) => T, options: { signal?: AbortSignal; image?: Buffer; evidenceIds?: string[];schema?:object } = {}) {
     return this.call(scope,operation,digest([instruction,data,options.schema,options.image?.toString('base64')]),options.evidenceIds ?? [],async (cfg,report) => {
-      const signal = AbortSignal.any([AbortSignal.timeout(35_000),...(options.signal ? [options.signal] : [])]);
+      const signal = AbortSignal.any([AbortSignal.timeout(90_000),...(options.signal ? [options.signal] : [])]);
       const content = [{type:'text',text:JSON.stringify(data)},...(options.image ? [{type:'image_url',image_url:{url:'data:image/png;base64,'+options.image.toString('base64')}}] : [])];
       let res: Response;
       try {
@@ -65,7 +65,7 @@ export class ModelGateway {
       // 全屏截图（1.9MB 级）会让本地 2B 视觉模型处理超时；先缩到 640 宽再定位，坐标按比例还原。
       const source = await sharp(image).metadata();
       const srcWidth = source.width ?? 0, srcHeight = source.height ?? 0;
-      const targetWidth = Math.min(640, srcWidth || 640);
+      const targetWidth = Math.min(800, srcWidth || 800);
       const shrunk = srcWidth > targetWidth ? await sharp(image).resize({width:targetWidth}).png().toBuffer() : image;
       const { width, height } = await sharp(shrunk).metadata();
       const scaleX = width && srcWidth ? srcWidth / width : 1;
@@ -77,7 +77,7 @@ export class ModelGateway {
       const agent = new Agent(frame,{
         generateReport:false,persistExecutionDump:false,autoPrintReportMsg:false,
         modelConfig:{MIDSCENE_MODEL_BASE_URL:cfg.baseUrl,MIDSCENE_MODEL_API_KEY:cfg.key,
-          MIDSCENE_MODEL_NAME:cfg.model,MIDSCENE_MODEL_FAMILY:cfg.family,MIDSCENE_MODEL_TIMEOUT:20_000,MIDSCENE_MODEL_RETRY_COUNT:0,MIDSCENE_MODEL_STREAM_MODE:'non-stream'},
+          MIDSCENE_MODEL_NAME:cfg.model,MIDSCENE_MODEL_FAMILY:cfg.family,MIDSCENE_MODEL_TIMEOUT:60_000,MIDSCENE_MODEL_RETRY_COUNT:0,MIDSCENE_MODEL_STREAM_MODE:'non-stream'},
         onLLMUsage:info => report(info)
       });
       try {

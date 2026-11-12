@@ -81,6 +81,11 @@ export interface GuardDecision {
 /** 白名单判定：当前页面是否仍在主链路内。expected 为空表示任意主链路页面均可。 */
 export function guardMainPath(platform: Platform, nodes: GuardNode[], expected: PageKind[] = []): GuardDecision {
   const kind = classifyPage(platform, nodes);
+  // 淘宝闪购是 Flutter 自绘，读屏几乎必然为空；此时“unknown”不代表偏离主链路，
+  // 只代表读不到。读不到时放行，否则守卫会把每一步都 back 掉（曾导致淘宝链路全线失败）。
+  if (kind === 'unknown' && platform === 'taobao' && nodes.length === 0) {
+    return {ok: true, kind, reason: null};
+  }
   const ok = kind !== 'unknown' && (expected.length === 0 || expected.includes(kind));
   return {ok, kind, reason: ok ? null : 'off_main_path'};
 }
