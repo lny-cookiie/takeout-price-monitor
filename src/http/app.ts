@@ -8,6 +8,8 @@ import { EvidenceStore } from '../infra/evidence.js';
 import { sourceFingerprint } from '../infra/fingerprint.js';
 import { meituanCollector, taobaoCollector } from '../adapters/fixture-collector.js';
 import { liveMeituanCollector } from '../adapters/meituan-collector.js';
+import { liveTaobaoCollector } from '../adapters/taobao-collector.js';
+import { withDeviceLock } from '../adapters/device-lock.js';
 import { Scheduler, scenarioLabels } from '../application/scheduler.js';
 import { summarize } from '../application/summary.js';
 import { STORES, fixtureQuote } from '../domain/catalog.js';
@@ -122,6 +124,17 @@ export async function createApplication(options: { root?: string; dataDir?: stri
     if (platform === 'meituan') {
       return liveMeituanCollector({sources, model, evidence, connect: options.androidTransport});
     }
+    // 淘宝闪购：Flutter 自绘，u2 读屏实测 0 节点，不能走通用 androidCollector 的读节点路径，
+    // 改用纯视觉全链路采集器（详见 src/adapters/taobao-collector.ts 顶部说明）。
+    if (platform === 'taobao_instant') {
+      const tb = sources.get('taobao_instant');
+      return liveTaobaoCollector({
+        sources, model,
+        adbPath: process.env.MIDSCENE_ADB_PATH ?? '',
+        serial: tb?.device ?? '',
+        yadbPath: join(process.cwd(), 'node_modules/@midscene/android/bin/yadb'),
+      });
+    }
     const adapter=androidCollector(platform,sources,model,evidence,id=>market.cost(id),options.androidTransport,task=>market.mappingCurrent(task),{openJdStore,findJdMenuItem,returnToJdMenu});
     if (platform!=='jd') return adapter;
     return {...adapter,async collect(task,attemptId,signal,attemptNumber,emit) {
@@ -143,7 +156,16 @@ export async function createApplication(options: { root?: string; dataDir?: stri
         started_at:at,finished_at:at,cleanup:'untouched',cost:{model_yuan:null,execution_ms:0}};
     }};
   });
-  scheduler = new Scheduler(store,[meituanCollector(baseUrl,browser,evidence),taobaoCollector(baseUrl,browser,evidence),...android],750,
+  // 三平台并行的真实边界：调度器按 mode:platform 互斥、不同平台会真并发，
+  // 但物理上只有一台手机，live 采集器必须串行占用设备（详见 src/adapters/device-lock.ts）。
+  const lockedLive = android.map((c):Collector => c.mode !== 'live' ? c : ({
+    platform: c.platform,
+    mode: c.mode,
+    close: () => c.close(),
+    collect: (task, attemptId, signal, attemptNumber, emit) =>
+      withDeviceLock(c.platform, () => c.collect(task, attemptId, signal, attemptNumber, emit)),
+  }));
+  scheduler = new Scheduler(store,[meituanCollector(baseUrl,browser,evidence),taobaoCollector(baseUrl,browser,evidence),...lockedLive],750,
     now=>market.materialize(now),(task,result)=>market.jdQuoteTasks(task,result));
   if (options.startScheduler !== false) scheduler.start();
   return { baseUrl, store, scheduler, server, dataDir,

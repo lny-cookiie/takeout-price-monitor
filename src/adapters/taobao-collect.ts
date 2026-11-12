@@ -9,10 +9,11 @@
 // 三条核心经验：
 //   1) 视觉定位必须配「页面结构硬约束」（y 区间），否则模型会被顶部广告位里的同名文字带偏。
 //   2) 同一页出现多个近似商品名（"板烧鸡腿堡" / "双层板烧鸡腿堡"）时，2B 视觉模型无法区分，
-//      该步骤必须用相对比例坐标（标定值见 SHOP_SEARCH_ADD_BTN）。
+//      该步骤必须用配置化的相对比例坐标（见 src/adapters/taobao-calibration.json）。
 //   3) 中文输入走 yadb（com.ysbing.yadb.Main + /data/local/tmp），不用 adb input text。
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {readFileSync} from 'node:fs';
 import {writeFile} from 'node:fs/promises';
 import sharp from 'sharp';
 import type {ModelGateway} from '../infra/model.js';
@@ -20,11 +21,30 @@ import type {ModelGateway} from '../infra/model.js';
 const run = promisify(execFile);
 const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 19), '[taobao]', ...a);
 
-/** 标定值：店铺内搜索结果页里，目标单品「板烧鸡腿堡」那一行加号按钮的相对位置。
- *  依据 2026-11-12 实测截图：1260x2844 屏上落在 (1182,1102)，即 (0.938W, 0.3875H)。
- *  第 1 行是「双层板烧鸡腿堡」，加号在 0.214H；两者仅差一个词，视觉模型必然选错，故用比例坐标。
- *  注意：换机型或淘宝改版后需重新标定。 */
-const SHOP_SEARCH_ADD_BTN = {xRatio: 0.938, yRatio: 0.3875};
+/** 标定值从配置读取，不硬编码在代码里（agent.md 5.4 节与第 6 节绝对坐标禁令的例外条款）。
+ *  配置里记录了校准设备（型号/分辨率/density/App 版本）与重新校准的触发条件。 */
+const CALIBRATION_PATH = 'src/adapters/taobao-calibration.json';
+interface TaobaoCalibration {
+  schema: string;
+  device: {model: string; resolution: string; density: number; appVersion: string; calibratedAt: string};
+  ratios: {
+    shopSearchAddButton: {xRatio: number; yRatio: number; label: string; measuredPx: [number, number]};
+    detailQuantityMinus: {xRatio: number; yRatio: number; label: string; measuredPx: [number, number]};
+  };
+}
+function loadCalibration(): TaobaoCalibration {
+  // 用相对 session cwd 的路径读取；配置随代码进版本库，便于追溯标定时的设备信息
+  const raw = readFileSync(CALIBRATION_PATH, 'utf8');
+  const parsed = JSON.parse(raw) as TaobaoCalibration;
+  if (parsed.schema !== 'taobao-calibration/v1') throw new Error('taobao_calibration_schema_mismatch');
+  const {shopSearchAddButton, detailQuantityMinus} = parsed.ratios;
+  for (const [name, r] of Object.entries({shopSearchAddButton, detailQuantityMinus})) {
+    if (!(r.xRatio > 0 && r.xRatio < 1) || !(r.yRatio > 0 && r.yRatio < 1)) {
+      throw new Error(`taobao_calibration_invalid_ratio:${name}`);
+    }
+  }
+  return parsed;
+}
 
 export interface TaobaoStep {name: string; ok: boolean; detail?: string}
 export interface TaobaoQuote {
@@ -62,6 +82,9 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
   const {adbPath, serial, brand, itemName, model, yadbPath} = o;
   const signal = o.signal ?? AbortSignal.timeout(600_000);
   const steps: TaobaoStep[] = [];
+  // 读取标定配置（比例 + 校准设备信息）；配置非法时直接抛错，不带着错误坐标去点
+  const calibration = loadCalibration();
+  const addButton = calibration.ratios.shopSearchAddButton;
   let W = 1260, H = 2844;
   const adb = async (args: string[]) =>
     (await run(adbPath, ['-s', serial, ...args], {encoding: 'buffer', maxBuffer: 64 * 1024 * 1024})).stdout;
@@ -192,10 +215,10 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     let s7 = false;
     if (s6) {
       await sleep(3000);
-      const ax = Math.round(W * SHOP_SEARCH_ADD_BTN.xRatio);
-      const ay = Math.round(H * SHOP_SEARCH_ADD_BTN.yRatio);
+      const ax = Math.round(W * addButton.xRatio);
+      const ay = Math.round(H * addButton.yRatio);
       await adb(['shell', 'input', 'tap', String(ax), String(ay)]);
-      log(`  [add-item] 标定坐标点击 (${ax},${ay}) = (${SHOP_SEARCH_ADD_BTN.xRatio}W, ${SHOP_SEARCH_ADD_BTN.yRatio}H)`);
+      log(`  [add-item] 标定坐标点击 (${ax},${ay}) = (${addButton.xRatio}W, ${addButton.yRatio}H) 校准设备=${calibration.device.model}/${calibration.device.resolution}`);
       await sleep(4000);
       s7 = true;
     }

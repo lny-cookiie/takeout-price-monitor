@@ -1,0 +1,40 @@
+{
+  "schema": "taobao-calibration/v1",
+  "purpose": "淘宝闪购没有可读节点，视觉模型又分不清同页近似品名，因此少数点击目标用相对比例常量。按 agent.md 5.4 节与第 6 节绝对坐标禁令的例外条款，比例必须来自配置并注明校准设备。",
+  "device": {
+    "model": "HBN-AL00",
+    "manufacturer": "HUAWEI",
+    "androidVersion": "12",
+    "resolution": "1260x2844",
+    "density": 540,
+    "orientation": "portrait",
+    "fontScale": "1.0",
+    "appPackage": "com.taobao.taobao",
+    "appVersion": "未记录（设备取回后补）",
+    "calibratedAt": "2026-11-12T07:28:00+08:00",
+    "calibratedBy": "真机实测截图逐像素测量"
+  },
+  "ratios": {
+    "shopSearchAddButton": {
+      "xRatio": 0.938,
+      "yRatio": 0.3875,
+      "label": "店铺内搜索结果页，目标单品「板烧鸡腿堡」那一行右侧的红色加号",
+      "why": "结果页同时存在「板烧鸡腿堡」(第2行) 与「双层板烧鸡腿堡」(第1行)，两者加号纵坐标相差约 0.17H，视觉模型连续 4 次都选中第 1 行，无法通过提示词纠正。",
+      "measuredPx": [1182, 1102],
+      "note": "点击后仍须截图验真已进入单品详情页；未进入则补点「加入购物车」"
+    },
+    "detailQuantityMinus": {
+      "xRatio": 0.8,
+      "yRatio": 0.4764,
+      "label": "单品详情页数量控件的圆形减号，用于采集后清空购物车",
+      "why": "淘宝购物车跨轮累加会让金额翻倍，必须每轮清零；购物车面板的「清空」按钮定位不稳定，改用详情页减号连点。",
+      "measuredPx": [1009, 1355]
+    }
+  },
+  "recalibrationTrigger": [
+    "换机型或换分辨率",
+    "修改系统字体缩放",
+    "淘宝 App 大版本升级",
+    "任一步连续两次截图验真失败"
+  ]
+}

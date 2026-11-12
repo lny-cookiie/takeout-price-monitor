@@ -3,6 +3,9 @@
 const PLATFORMS={jd:{name:'京东',stages:['启动京东 App','搜索品牌','匹配门店','店内搜索爆品','打开商品详情','点击立即购买','进入结算页','提取价格字段']},
   meituan:{name:'美团',stages:['等待美团接入']},taobao:{name:'淘宝闪购',stages:['等待淘宝闪购接入']}};
 const $=id=>document.getElementById(id),sleep=ms=>new Promise(ok=>setTimeout(ok,ms));
+// 平台标识映射：前端用简短标识，后端来源配置用完整契约标识 taobao_instant
+const API_PLATFORM={jd:'jd',meituan:'meituan',taobao:'taobao_instant'};
+const UI_PLATFORM={jd:'jd',meituan:'meituan',taobao_instant:'taobao'};
 const form=$('bd-form'),runPanel=$('run-panel'),summary=$('run-summary'),runsBox=$('platform-runs'),logBox=$('run-log'),logCount=$('log-count'),stateEl=$('run-state'),actions=$('run-actions'),openResult=$('open-result'),startBtn=$('start-btn');
 let busy=false,failedPlatforms=new Set(),lastPayload=null,logLines=0;
 function toast(message){const t=$('bd-toast');t.textContent=message;clearTimeout(t._timer);t._timer=setTimeout(()=>{t.textContent='';},3200);}
@@ -17,7 +20,7 @@ function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;'
 // 接后端时替换这里：POST /api/market/runs 返回 runId，再用 /api/market/runs/{id} 轮询。
 async function startCollection(payload,platforms){
   const res = await fetch('/api/bd/runs',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({city:payload.city,brand:payload.brand,store:payload.store||'',item:payload.item,platforms})});
+    body:JSON.stringify({city:payload.city,brand:payload.brand,store:payload.store||'',item:payload.item,platforms:platforms.map(p=>API_PLATFORM[p]||p)})});
   const data = await res.json().catch(()=>({error:'bad_response'}));
   if(!res.ok) throw new Error(data.message||data.error||('HTTP '+res.status));
   return data;
@@ -30,7 +33,11 @@ async function pollRun(runId){
 }
 const STAGE_LABELS={home:'进入首页',takeout:'打开外卖频道',search:'搜索品牌名',results:'进入门店结果页',store:'进入店铺',item:'定位爆品',cart:'加购结算',done:'采数完成'};
 async function runPlatform(platform,payload,runId,state){
-  if(!runId||state==='not_integrated'){setRun(platform,'failed',100,state==='not_integrated'?'未接入':'未启动');addLog(`${PLATFORMS[platform].name}：${state==='not_integrated'?'采集链路尚未接入调度':'任务未创建'}`);failedPlatforms.add(platform);return false;}
+  if(!runId||state==='not_integrated'||state==='not_licensed'){
+    const label = state==='not_licensed' ? '待授权' : state==='not_integrated' ? '未接入' : '未启动';
+    setRun(platform,'failed',100,label);
+    addLog(`${PLATFORMS[platform].name}：${state==='not_licensed'?'采集许可未满足，需补书面授权后才能发起':state==='not_integrated'?'采集链路尚未接入调度':'任务未创建'}`);
+    failedPlatforms.add(platform);return false;}
   setRun(platform,'running',5,'已提交');
   let last='';
   for(let i=0;i<120;i++){
@@ -59,7 +66,7 @@ form.addEventListener('submit',async event=>{event.preventDefault();if(busy)retu
   try{created=await startCollection(payload,platforms);}
   catch(e){toast('提交失败：'+e.message);busy=false;startBtn.disabled=false;startBtn.textContent='开始采集';addLog('提交失败：'+e.message);return;}
   if(created.matched)addLog(`匹配到：${created.matched.storeName} · ${created.matched.itemName}`);
-  for(const platform of platforms){const r=(created.platforms||[]).find(x=>x.platform===platform)||{};await runPlatform(platform,payload,r.runId,r.state);}
+  for(const platform of platforms){const r=(created.platforms||[]).find(x=>UI_PLATFORM[x.platform]===platform)||{};await runPlatform(platform,payload,r.runId,r.state);}
   busy=false;startBtn.disabled=false;startBtn.textContent='开始采集';
   const ok=platforms.length-failedPlatforms.size;stateEl.textContent=failedPlatforms.size?'部分失败':'采集完成';
   addLog(`本次采集结束：成功 ${ok}/${platforms.length}，用时 ${((Date.now()-started)/1000).toFixed(1)} 秒（原型模拟）`);

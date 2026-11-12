@@ -201,25 +201,29 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
           } catch (e) {
             result.push({platform, state:'failed', message:(e as Error).message.slice(0,160)});
           }
-        } else if (platform === 'meituan') {
+        } else {
+          // 美团与淘宝闪购走同一套「找到/创建计划 -> runNow 落库」的路径。
+          // 淘宝若采集许可未满足，runNow 会抛 live_source_not_ready，按失败如实返回，不伪装成未接入。
           try {
-            const planId = createHash('sha256').update(['bd',hit.id,'meituan'].join('|')).digest('hex');
+            const platformKey = platform as 'meituan' | 'taobao_instant';
+            const label = platformKey === 'meituan' ? '美团' : '淘宝闪购';
+            const planId = createHash('sha256').update(['bd',hit.id,platformKey].join('|')).digest('hex');
             const existingPlan = (store.list<Plan>('market_plans') as Plan[]).find(p=>p.id===planId);
             if (!existingPlan) {
-              store.savePlan({id:planId, name:`BD 美团采集 · ${hit.itemName}`, targetIds:[hit.id], profileId:profile.id,
+              store.savePlan({id:planId, name:`BD ${label}采集 · ${hit.itemName}`, targetIds:[hit.id], profileId:profile.id,
                 quantity:1, startDate:new Date().toISOString().slice(0,10), days:1,
                 times:{lunch:'11:00',dinner:'17:00',night:'21:00'}, enabled:true});
             }
             const hour=Number(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',hour:'numeric',hourCycle:'h23'}).format(new Date()));
             const meal = (hour<16?'lunch':hour<21?'dinner':'night') as 'lunch'|'dinner'|'night';
-            const run = store.runNow(planId, meal, 'meituan');
+            const run = store.runNow(planId, meal, platformKey);
             result.push({platform, runId:String(run), state:'queued'});
           } catch (e) {
-            result.push({platform, state:'failed', message:(e as Error).message.slice(0,160)});
+            result.push({platform, state:(e as Error).message === 'live_source_not_ready' ? 'not_licensed' : 'failed',
+              message:(e as Error).message === 'live_source_not_ready'
+                ? '该平台的采集许可未满足，暂不能发起真实采集'
+                : (e as Error).message.slice(0,160)});
           }
-        } else {
-          // 淘宝闪购的真实采集链路尚未接入调度器，明确返回未接入，不返回假数据。
-          result.push({platform, state:'not_integrated', message:'淘宝闪购的采集链路尚未接入调度，暂不能从这里发起'});
         }
       }
       tick();
