@@ -1,6 +1,6 @@
 // 采集实时进度：脚本每完成一个节点就写一次 .runtime/live-progress.json，
 // 前端通过 /api/market/live-progress 轮询，实现"用户实时看到工具走到哪一步"。
-import {writeFile, mkdir} from 'node:fs/promises';
+import {writeFile, readFile, mkdir} from 'node:fs/promises';
 import {dirname} from 'node:path';
 
 export const PROGRESS_NODES = [
@@ -15,6 +15,17 @@ export const PROGRESS_NODES = [
 ] as const;
 
 export const PROGRESS_FILE = '.runtime/live-progress.json';
+
+/**
+ * 三平台并行采集时进度会互相覆盖，所以真正的进度按平台分文件存放。
+ * PROGRESS_FILE 只保留「最近一次写入」，用于兼容只认单文件的旧页面。
+ */
+export const PROGRESS_DIR = '.runtime/live-progress';
+
+export function progressFileFor(platform: string): string {
+  const safe = platform.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `${PROGRESS_DIR}/${safe}.json`;
+}
 
 export interface LiveProgress {
   platform: string;
@@ -49,8 +60,23 @@ export async function reportProgress(params: {
     startedAt: params.startedAt ?? now,
     updatedAt: now,
   };
+  const payload = JSON.stringify(data, null, 2);
+  // 主路径：按平台隔离，三平台并行时互不覆盖。
+  await mkdir(PROGRESS_DIR, {recursive: true}).catch(() => undefined);
+  await writeFile(progressFileFor(params.platform), payload, 'utf8').catch(() => undefined);
+  // 兼容路径：保留「最近一次写入」，旧页面仍能读到单文件。
   await mkdir(dirname(PROGRESS_FILE), {recursive: true}).catch(() => undefined);
-  await writeFile(PROGRESS_FILE, JSON.stringify(data, null, 2), 'utf8').catch(() => undefined);
+  await writeFile(PROGRESS_FILE, payload, 'utf8').catch(() => undefined);
+}
+
+/** 读取某个平台的进度；不传平台时读取兼容单文件。 */
+export async function readProgress(platform?: string): Promise<LiveProgress | null> {
+  const file = platform ? progressFileFor(platform) : PROGRESS_FILE;
+  try {
+    return JSON.parse(await readFile(file, 'utf8')) as LiveProgress;
+  } catch {
+    return null;
+  }
 }
 
 /** 把后端步骤名映射到 8 个关键节点 */

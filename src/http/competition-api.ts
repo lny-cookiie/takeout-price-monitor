@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
+import {readProgress} from '../adapters/live-progress.js';
 import { proposeMapping, rankCandidates } from '../application/matching.js';
 import { PLATFORMS, type Platform } from '../domain/contracts.js';
 import { array, boolean, candidateSchema, meals, number, object, orderSchema, planSchema, profileSchema, string, validator,
@@ -68,13 +69,11 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
       return true;
     }
     if (method==='GET' && path==='/api/market/live-progress') {
-      // 采集实时进度：读取脚本写的 progress 文件，前端轮询渲染进度条
-      try {
-        const raw = await readFile('.runtime/live-progress.json','utf8');
-        reply(200, JSON.parse(raw));
-      } catch {
-        reply(200, {platform:null,node:null,index:0,total:8,percent:0,state:'idle'});
-      }
+      // 采集实时进度：三平台并行时按平台隔离读取，避免进度互相覆盖。
+      // 不带 platform 参数时保持旧行为，读「最近一次写入」的兼容文件。
+      const requested = url.searchParams.get('platform') ?? undefined;
+      const data = await readProgress(requested);
+      reply(200, data ?? {platform: requested ?? null, node: null, index: 0, total: 8, percent: 0, state: 'idle'});
       return true;
     }
     if (method==='GET' && path==='/api/market/records') {

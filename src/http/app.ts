@@ -158,14 +158,49 @@ export async function createApplication(options: { root?: string; dataDir?: stri
   });
   // 三平台并行的真实边界：调度器按 mode:platform 互斥、不同平台会真并发，
   // 但物理上只有一台手机，live 采集器必须串行占用设备（详见 src/adapters/device-lock.ts）。
-  const lockedLive = android.map((c):Collector => c.mode !== 'live' ? c : ({
+  // 设备级互斥：物理上只有一台手机，任何 live 采集器都必须串行占用设备。
+  // 之前只包了 android（京东）那一组，美团与淘宝直接进调度器，三平台同时发起时
+  // 美团和淘宝会真并发抢设备，表现为定位立刻失败、结算页读不到。这里统一包一层。
+  // 串行切换平台时，前一个平台会停在结算页；下一个平台启动后容易读到残留页面或弹层。
+  // 因此在拿到设备锁之后、真正采集之前，先把另外两个 App 强停并回桌面，保证干净起点。
+  const APP_PACKAGE: Record<string, string> = {
+    jd: 'com.jingdong.app.mall',
+    meituan: 'com.sankuai.meituan',
+    taobao_instant: 'com.taobao.taobao',
+  };
+  const resetOtherApps = async (currentPlatform: string): Promise<void> => {
+    const adbPath = process.env.MIDSCENE_ADB_PATH;
+    if (!adbPath) return;
+    try {
+      const {execFile} = await import('node:child_process');
+      const {promisify} = await import('node:util');
+      const run = promisify(execFile);
+      const {stdout} = await run(adbPath, ['devices'], {timeout: 10_000, encoding: 'utf8'});
+      const serial = String(stdout).split('\n').slice(1)
+        .map(l => l.trim().split(/\s+/)).find(parts => parts[1] === 'device')?.[0];
+      if (!serial) return;
+      for (const [key, pkg] of Object.entries(APP_PACKAGE)) {
+        if (key === currentPlatform) continue;
+        await run(adbPath, ['-s', serial, 'shell', 'am', 'force-stop', pkg], {timeout: 15_000}).catch(() => null);
+      }
+      await run(adbPath, ['-s', serial, 'shell', 'input', 'keyevent', 'KEYCODE_HOME'], {timeout: 10_000}).catch(() => null);
+      await new Promise(ok => setTimeout(ok, 1_500));
+    } catch { /* 清理失败不阻断采集 */ }
+  };
+  const wrapDeviceLock = (c: Collector): Collector => c.mode !== 'live' ? c : ({
     platform: c.platform,
     mode: c.mode,
     close: () => c.close(),
     collect: (task, attemptId, signal, attemptNumber, emit) =>
-      withDeviceLock(c.platform, () => c.collect(task, attemptId, signal, attemptNumber, emit)),
-  }));
-  scheduler = new Scheduler(store,[meituanCollector(baseUrl,browser,evidence),taobaoCollector(baseUrl,browser,evidence),...lockedLive],750,
+      withDeviceLock(c.platform, async () => {
+        await resetOtherApps(c.platform);
+        return c.collect(task, attemptId, signal, attemptNumber, emit);
+      }),
+  });
+  const lockedLive = android.map(wrapDeviceLock);
+  const lockedMeituan = wrapDeviceLock(meituanCollector(baseUrl,browser,evidence));
+  const lockedTaobao = wrapDeviceLock(taobaoCollector(baseUrl,browser,evidence));
+  scheduler = new Scheduler(store,[lockedMeituan,lockedTaobao,...lockedLive],750,
     now=>market.materialize(now),(task,result)=>market.jdQuoteTasks(task,result));
   if (options.startScheduler !== false) scheduler.start();
   return { baseUrl, store, scheduler, server, dataDir,

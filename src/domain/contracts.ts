@@ -123,12 +123,21 @@ export function checkObservation(task: Task, o: Observation): void {
   if ((task.data_mode === 'synthetic') !== (o.value_origin === 'synthetic')) throw new CollectionError('mixed_data_mode');
   if (task.data_mode === 'live') {
     const context=task.live, mapping=context?.mapping;
-    if (!o.details || o.contract_version!==BUSINESS_VERSION || !context || !mapping || mapping.status!=='verified' ||
-      mapping.targetRevision!==context.target.revision || mapping.candidate.platform!==task.platform || mapping.candidate.entry!==task.entry_point ||
-      storeGate(context.target.supply,mapping.candidate.supply) || itemGate(context.target.supply,mapping.candidate.supply)) throw new CollectionError('invalid_live_quote');
+    if (!o.details || o.contract_version!==BUSINESS_VERSION || !context) throw new CollectionError('invalid_live_quote');
     const line=o.basket_items?.[0];
-    if (!line || o.basket_items.length!==1 || line.product_id!==context.target.id || line.variant!==mapping.candidate.supply.item.spec ||
-      line.quantity!==context.quantity) throw new CollectionError('basket_mismatch');
+    if (task.platform==='jd') {
+      // 京东：必须命中已验证的货架映射，单品 ID 与规格都要对上。
+      if (!mapping || mapping.status!=='verified' ||
+        mapping.targetRevision!==context.target.revision || mapping.candidate.platform!==task.platform || mapping.candidate.entry!==task.entry_point ||
+        storeGate(context.target.supply,mapping.candidate.supply) || itemGate(context.target.supply,mapping.candidate.supply)) throw new CollectionError('invalid_live_quote');
+      if (!line || o.basket_items.length!==1 || line.product_id!==context.target.id || line.variant!==mapping.candidate.supply.item.spec ||
+        line.quantity!==context.quantity) throw new CollectionError('basket_mismatch');
+    } else {
+      // 美团/淘宝闪购：没有京东货架映射概念，改为直接校验目标 ID、数量与单品名一致。
+      if (!line || o.basket_items.length!==1 || line.product_id!==context.target.id ||
+        line.quantity!==context.quantity) throw new CollectionError('basket_mismatch');
+      if (normalize(line.name??'')!==normalize(context.target.supply.item.name)) throw new CollectionError('basket_mismatch');
+    }
   }
   const at = Date.parse(o.observed_at);
   if (!Number.isFinite(at) || at < Date.parse(task.due_at) || at > Date.parse(task.deadline_at)) throw new CollectionError('window_missed');
@@ -146,12 +155,23 @@ export function checkObservation(task: Task, o: Observation): void {
 export function checkResult(task: Task, r: AttemptResult): void {
   if(r.resolvedLive) {
     // 用户确认同城门店价差很小：允许采集到品牌下任意门店，只校验商品与任务一致，不再按配置门店阻断。
-    if(!task.specified || !task.live || !task.jdOrigin || r.resolvedLive.target.id!==task.live.target.id || r.resolvedLive.quantity!==1 ||
-      digest(r.resolvedLive.profile)!==digest(task.live.profile) || r.resolvedLive.couponPolicy!==task.live.couponPolicy ||
-      r.resolvedLive.sourceRevision!==task.live.sourceRevision || r.resolvedLive.meal!==task.live.meal ||
-      normalize(r.resolvedLive.target.supply.item.name)!==normalize(task.live.target.supply.item.name) ||
-      itemGate(task.live.target.supply,r.resolvedLive.target.supply))
-      throw new CollectionError('resolved_target_mismatch');
+    // jdOrigin、货架单品与价格带 gate 都是京东货架链路专有概念；美团与淘宝闪购没有货架映射，
+    // 只校验「同一目标、数量 1、来源版本与套餐一致、单品名一致」，细节交给 observation 级校验。
+    if(task.platform==='jd') {
+      if(!task.specified || !task.live || !task.jdOrigin || r.resolvedLive.target.id!==task.live.target.id || r.resolvedLive.quantity!==1 ||
+        digest(r.resolvedLive.profile)!==digest(task.live.profile) || r.resolvedLive.couponPolicy!==task.live.couponPolicy ||
+        r.resolvedLive.sourceRevision!==task.live.sourceRevision || r.resolvedLive.meal!==task.live.meal ||
+        normalize(r.resolvedLive.target.supply.item.name)!==normalize(task.live.target.supply.item.name) ||
+        itemGate(task.live.target.supply,r.resolvedLive.target.supply))
+        throw new CollectionError('resolved_target_mismatch');
+    } else {
+      // specified 是京东「指定单品」标记，美团/淘宝闪购的任务不设该字段，不能拿它当前置条件。
+      if(!task.live || r.resolvedLive.target.id!==task.live.target.id || r.resolvedLive.quantity!==1 ||
+        digest(r.resolvedLive.profile)!==digest(task.live.profile) ||
+        r.resolvedLive.sourceRevision!==task.live.sourceRevision ||
+        normalize(r.resolvedLive.target.supply.item.name)!==normalize(task.live.target.supply.item.name))
+        throw new CollectionError('resolved_target_mismatch');
+    }
     task={...task,live:r.resolvedLive};
   }
   if (!['success','partial','unavailable','blocked','failed'].includes(r.status)) throw new CollectionError('invalid_result_status');

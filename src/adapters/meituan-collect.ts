@@ -221,7 +221,10 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
       const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
       const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
       const {stdout} = await run(adb, ['-s', serial, 'shell', 'dumpsys window | grep mCurrentFocus'], {timeout: 8_000, encoding: 'utf8'});
-      if (/SearchResultActivity|search\.result/i.test(String(stdout))) return true;
+      // 美团搜索结果页与搜索输入页共用 GlobalSearchActivity（2026-11-13 实测 mCurrentFocus），
+      // 只认 SearchResultActivity 会让结果页永远判不出来，进而错走兜底并抛 meituan_no_search_entry。
+      // 本函数只在「已执行过搜索」之后调用，因此认 GlobalSearchActivity 是安全的。
+      if (/SearchResultActivity|GlobalSearchActivity|search\.result/i.test(String(stdout))) return true;
     } catch { /* 落到文本判据 */ }
     // 文本兜底：搜索框节点里同时含品牌名和“搜索”提示，说明这是结果页顶栏。
     return labels.some(l => l.includes(brand) && /搜索框|点击可搜索/.test(l))

@@ -7,7 +7,7 @@
 //
 // 数据口径：拿不到报价时返回 failed / blocked 并在 trace 里写明卡在哪一步，绝不用模拟数据填充。
 import {randomUUID} from 'node:crypto';
-import type {AttemptResult, Collector, Observation, Task} from '../domain/contracts.js';
+import type {AttemptResult, Collector, Evidence, Observation, Task} from '../domain/contracts.js';
 import type {AndroidSources} from './android-source.js';
 import type {ModelGateway} from '../infra/model.js';
 import {collectTaobao} from './taobao-collect.js';
@@ -86,6 +86,7 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
       let error_code: string | null = null;
       let availability = 'unknown';
       let observation: Observation | null = null;
+      let evidence: Evidence | null = null;
 
       try {
         reportProgress({platform: 'taobao_instant', node: '进入首页', state: 'running'});
@@ -105,8 +106,22 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
         });
 
         for (const s of quote.steps) note(s.name, s.ok ? 'ok' : 'failed');
+        if (quote.rawText) note('checkout_raw_text', quote.rawText.slice(0, 400));
 
-        if (quote.totalFen != null && quote.totalFen > 0) {
+        // 结算页截图的 sha256 作为本笔报价的页面证据；没有证据就不产出报价，
+        // 避免出现「有金额但没有页面依据」的不可核对数据。
+        evidence = quote.checkoutSha256 ? {
+          id: randomUUID(),
+          sha256: quote.checkoutSha256,
+          screenshot: quote.checkoutImagePath ?? '.runtime/tb-checkout-final.png',
+          text_file: '',
+          captured_at: new Date().toISOString(),
+          page_stage: 'checkout',
+        } : null;
+        if (quote.totalFen != null && quote.totalFen > 0 && evidence) {
+          // 收窄为非空常量，供下方闭包安全引用
+          const ev: Evidence = evidence;
+          const money = (fen: number | null) => fen == null ? null : {raw: `¥${(fen / 100).toFixed(2)}`, fen, evidence: ev};
           observation = {
             observation_id: randomUUID(),
             source_id: task.source_id, tenant_id: task.tenant_id,
@@ -114,7 +129,8 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
             store_id: task.store_id, basket_id: task.basket_id, scenario_id: task.scenario_id,
             price_kind: 'checkout_payable', price_scope: 'basket', currency: 'CNY',
             amount_fen: quote.totalFen,
-            raw_value: quote.rawText ?? String(quote.totalFen / 100),
+            // raw_value 必须是能被 parseCny 解析的纯金额文本；传整页 JSON 会触发 ambiguous_amount。
+            raw_value: `¥${(quote.totalFen / 100).toFixed(2)}`,
             components: {
               delivery_fee: {
                 amount_fen: quote.deliveryFen, raw_value: quote.deliveryFen == null ? null : String(quote.deliveryFen / 100),
@@ -143,9 +159,27 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
             account_ref: task.account_ref,
             delivery_point_id: task.delivery_point_id,
             entry_point: task.entry_point,
-            evidence_refs: [],
+            evidence_refs: [evidence],
             contract_version: task.contract_version,
             collector_version: 'taobao-0.1.0',
+            details: {
+              components: {
+                subtotal: money(quote.discountFen ?? quote.originalFen),
+                packaging: money(quote.packagingFen),
+                delivery: money(quote.deliveryFen),
+                other: money(quote.redPacketFen),
+                discount: money(quote.discountFen),
+              },
+              subtotalBasis: 'after_discount',
+              feesSeparate: true,
+              eta: null,
+              coupons: null,
+              missing: {},
+              reconciled: false,
+              contextEvidence: ev,
+              storeEvidence: ev,
+              itemEvidence: ev,
+            },
           };
           status = observation.detail_complete ? 'success' : 'partial';
           availability = 'available';
@@ -165,7 +199,7 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
       const finished_at = new Date().toISOString();
       return {
         status, error_code, availability, observation, trace,
-        evidence: null, started_at, finished_at,
+        evidence, started_at, finished_at,
         cleanup: 'untouched',
         cost: {model_yuan: null, execution_ms: Date.now() - started},
         ...(observation && live ? {resolvedLive: live} : {}),

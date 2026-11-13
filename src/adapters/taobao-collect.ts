@@ -11,6 +11,7 @@
 //   2) 同一页出现多个近似商品名（"板烧鸡腿堡" / "双层板烧鸡腿堡"）时，2B 视觉模型无法区分，
 //      该步骤必须用配置化的相对比例坐标（见 src/adapters/taobao-calibration.json）。
 //   3) 中文输入走 yadb（com.ysbing.yadb.Main + /data/local/tmp），不用 adb input text。
+import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {readFileSync} from 'node:fs';
@@ -48,6 +49,10 @@ function loadCalibration(): TaobaoCalibration {
 
 export interface TaobaoStep {name: string; ok: boolean; detail?: string}
 export interface TaobaoQuote {
+  /** 结算页截图的 sha256，作为该笔报价的页面证据（page_stage=checkout） */
+  checkoutSha256?: string | null;
+  /** 结算页截图落盘路径，便于人工复核 */
+  checkoutImagePath?: string | null;
   store: string | null;
   item: string | null;
   originalFen: number | null;
@@ -129,6 +134,11 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
 
   const typeChinese = async (text: string): Promise<boolean> => {
     try {
+      // 先清空输入框：淘宝搜索框会保留上一次关键词，yadb 是追加注入而不是替换，
+      // 不清理就会出现「想搜麦当劳、实际搜成清炖牛肉饭」。一次 adb 调用连发退格。
+      const clears = Array.from({length: 30}, () => 'input keyevent KEYCODE_DEL').join(' && ');
+      await adb(['shell', `input keyevent KEYCODE_MOVE_END && ${clears}`]).catch(() => null);
+      await sleep(300);
       await run(adbPath, ['-s', serial, 'push', yadbPath, '/data/local/tmp/'], {timeout: 20_000, encoding: 'utf8'}).catch(() => null);
       const out = await run(adbPath, ['-s', serial, 'shell',
         `app_process -Djava.class.path=/data/local/tmp/yadb /data/local/tmp com.ysbing.yadb.Main -keyboard '${text.replace(/'/g, "'\\''")}'`],
@@ -143,15 +153,6 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
   };
 
   try {
-    // 模型预热：本地 2B 视觉模型在长时间空闲后，第一次推理会明显变慢甚至撞满 60s 超时。
-    // 实测 3 轮连测里只有第 1 轮失败（flash-tab 连续 model_location_failed），后两轮都正常，
-    // 就是首次请求冷启动导致。这里先发一个极小的文本请求把模型唤醒。
-    try {
-      await model.json('taobao_instant', 'taobao_warmup', '只输出 JSON {"ok":true}。', {ok: true}, v => v,
-        {signal: AbortSignal.timeout(150_000)});
-      log('模型预热完成');
-    } catch { log('模型预热未完成，继续尝试正式流程'); }
-
     // 0 唤醒屏幕并回到可操作的桌面状态。
     // 设备息屏时 screencap 会得到约 20KB 的全黑图，视觉定位必然错——这是实测踩过的坑。
     await adb(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']).catch(() => null);
@@ -166,11 +167,30 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     await sleep(1400);
     mark('唤醒屏幕', true);
 
+    // 视觉模型预热：对当前屏幕做一次真实视觉定位，把视觉编码器（mmproj）真正加载进显存。
+    // 只发文本请求不会加载视觉编码器；实测模型服务空闲约 40 分钟后，首次 locate 会撞满
+    // 60 秒超时，而同一张截图在本地单测只要 7 秒——冷的就是视觉通道，不是模型本体。
+    try {
+      const warmPng = await snap('warmup');
+      await model.locate('taobao_instant', warmPng, '屏幕上的任意可见文字', AbortSignal.timeout(150_000));
+      log('视觉模型预热完成');
+    } catch { log('视觉预热未完成，继续尝试正式流程'); }
+
     // 冷启动淘宝，保证从干净首页开始。
     // 等待时间不能太短：淘宝冷启动期间会占满 CPU，此时立刻调视觉模型会拖到 60 秒超时
     // （2026-11-12 实测：等 11 秒时连续 3 次 model_location_failed，每次卡满 62 秒）。
     await adb(['shell', 'am', 'start', '-S', '-n', 'com.taobao.taobao/com.taobao.tao.welcome.Welcome']);
-    await sleep(20_000);
+    // 冷启动不要死等固定秒数：实测首页常在 8-10 秒就可用，死等 20 秒纯属浪费；
+    // 但双 11 弹层期会更慢，所以改成「先等 8 秒，再用首页 tab 特征轮询确认就绪」。
+    await sleep(8_000);
+    for (let i = 0; i < 3; i++) {
+      try {
+        const bootPng = await snap('boot-check');
+        const [bx, by] = await model.locate('taobao_instant', bootPng, '页面顶部 tab 栏里的“推荐”或“关注”文字', signal);
+        if (bx > 10 && by > 60 && by < 420) break;
+      } catch { /* 尚未就绪，继续等 */ }
+      await sleep(2_000);
+    }
     mark('冷启动淘宝', true);
 
     // 1 首页 →「闪购外卖」tab
@@ -192,7 +212,26 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     const storeHint = o.storeKeyword
       ? `搜索结果列表里名字包含“${o.storeKeyword}”的那家麦当劳门店卡片标题行（在“综合/销量/速度”排序栏下方）`
       : '搜索结果列表里第一家麦当劳门店卡片的标题行（在“综合/销量/速度”排序栏下方）';
-    const s4 = s3 && await tapByVision(storeHint, 'store', {yMin: Math.round(H * 0.30), yMax: Math.round(H * 0.65)});
+    let s4 = s3 && await tapByVision(storeHint, 'store', {yMin: Math.round(H * 0.30), yMax: Math.round(H * 0.65)});
+    // 进店后校验门店名：搜索结果里混有 Kpro 等近似招牌，点错会整条链路白跑（实测浪费一分钟）。
+    if (s4) {
+      try {
+        const shopPng = await snap('store-verify');
+        const r = await model.json<{value: string}>('taobao_instant', 'taobao_store_check',
+          '读出当前页面顶部的门店全名，只输出门店名，读不到输出空字符串。',
+          {}, (v: unknown) => v as {value: string}, {image: shopPng, signal,
+            schema: {type: 'object', properties: {value: {type: 'string'}}, required: ['value'], additionalProperties: false}});
+        const shopName = String((r as {value?: string})?.value ?? '').trim();
+        if (shopName && !shopName.includes(brand)) {
+          log(`  [store] 进错店「${shopName}」，返回重选`);
+          await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => null);
+          await sleep(1_500);
+          s4 = await tapByVision('搜索结果列表里名字包含“' + brand + '”那一行的门店卡片标题', 'store-retry', {yMin: Math.round(H * 0.30), yMax: Math.round(H * 0.65)});
+        } else if (shopName) {
+          log(`  [store] 门店确认：${shopName}`);
+        }
+      } catch { /* 校验异常不阻断主链路 */ }
+    }
     mark('进入目标门店', !!s4);
 
     // 5 门店页下滑，让顶部展开完整的“搜一搜”搜索框（刚进店只有小放大镜，无法定位）
@@ -242,6 +281,8 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
 
     // 10 读结算页字段：先截大图存档，再让模型逐项读金额（复杂嵌套 schema 2B 模型容易输出不合法）
     const png = await snap('checkout-final');
+    const checkoutSha256 = createHash('sha256').update(png).digest('hex');
+    const checkoutImagePath = '.runtime/tb-checkout-final.png';
     const img = await sharp(png).resize(Math.round(W * 0.62)).jpeg({quality: 85}).toBuffer();
     const ask = async (task: string): Promise<string | null> => {
       try {
@@ -280,6 +321,8 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     mark('采数完成', total != null, `合计=${total}`);
 
     return {
+      checkoutSha256,
+      checkoutImagePath,
       store: storeTxt,
       item: itemName,
       originalFen: fen(original),
