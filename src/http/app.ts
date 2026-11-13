@@ -193,7 +193,8 @@ export async function createApplication(options: { root?: string; dataDir?: stri
     close: () => c.close(),
     collect: (task, attemptId, signal, attemptNumber, emit) =>
       withDeviceLock(c.platform, async () => {
-        await resetOtherApps(c.platform);
+        // 临时开关：RESET_OTHER_APPS=0 可禁用平台切换清理，用于定位京东回归失败是否由它引入
+        if (process.env.RESET_OTHER_APPS !== '0') await resetOtherApps(c.platform);
         return c.collect(task, attemptId, signal, attemptNumber, emit);
       }),
   });

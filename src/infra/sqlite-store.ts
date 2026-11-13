@@ -195,7 +195,11 @@ export class SqliteStore implements CollectionStore {
         const attempt=this.db.prepare('SELECT id FROM attempts WHERE slot_id=? AND result_json IS NULL ORDER BY number DESC LIMIT 1').get(t.slot_id);
         if (attempt) this.closeOpenSteps(String(attempt.id),'interrupted','process_interrupted');
         this.db.prepare("UPDATE slots SET state='interrupted' WHERE id=?").run(t.slot_id);
-        if (t.data_mode==='live' && !t.shelf) this.pauseScope(t,'process_interrupted',true);
+        // 这里只归档上次未完成的 attempt，不再冻结账号与设备。
+        // 服务重启/崩溃属于运维事件，不是业务性失败；此前无条件 pauseScope(…, true)
+        // 会把 device:<serial> 写进 paused_resources 永久冻结整台设备，
+        // 导致重启后所有平台一律 source_blocked（2026-11-13 实测踩坑，需手工清表才能恢复）。
+        // 真正需要人工核对购物车的场景由 recordAttempt 里的 collector_crashed 分支负责冻结。
         this.event(t,'collection','process_interrupted');
       }
       this.db.exec('DELETE FROM locks');
