@@ -422,10 +422,30 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         console.error('[diag] sku_match: switching to u2');
         await screen.device.setTreeMode?.('u2');
         console.error('[diag] sku_match: u2 ready, waiting spec');
-        try{nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,...(task.specified?{timeoutMs:6_000}:{})});}
+        // 京东存在“立即购买”流程：点商品会直接跳结算页（Taro 渲染的
+        // SettlementFillOrderTaroActivity），规格面板根本不出现。
+        // 此时再调 waitFor 会在内部 this.nodes() 上挂死——u2 读 Taro 页面不返回，
+        // 连 waitFor 自己的超时判断都走不到，实测卡住十几分钟直到人工中止。
+        // 所以先给读树加一层硬超时探测：确认已在结算页就跳过规格核对，直接往下走。
+        const probeNodes = await Promise.race([
+          screen.nodes(false).catch(()=>[] as UiNode[]),
+          new Promise<UiNode[]>(resolve=>setTimeout(()=>resolve([]),8_000)),
+        ]);
+        const alreadyCheckout = !!(source.selectors.checkoutStage && screen.selector('checkoutStage',probeNodes,false));
+        if (alreadyCheckout) {
+          note('variant','已在结算页（立即购买流程），跳过规格核对。');
+          nodes = probeNodes;
+        }
+        try{
+          if (alreadyCheckout) throw new CollectionError('page_not_ready');
+          nodes=await screen.waitFor(source.selectors.spec ? ['spec'] : ['selectedSpec'],{availability:true,timeoutMs:task.specified?6_000:15_000});
+        }
         catch(error){
           // 立即购买模式不依赖规格文字：详情页有“立即购买”按钮即可直接继续。
-          if (source.selectors.buyNow) {
+          if (alreadyCheckout) {
+            // 已在结算页：保留探测到的节点，直接进入后续金额读取。
+            note('variant','立即购买模式：跳过规格文字核对，直接去结算。');
+          } else if (source.selectors.buyNow) {
             nodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
             note('variant','立即购买模式：跳过规格文字核对，直接去结算。');
           } else {
