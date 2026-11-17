@@ -8,10 +8,10 @@ import {connectAndroid} from './android-transport.js';
 import type {AndroidSources, AndroidSource} from './android-source.js';
 import type {ModelGateway} from '../infra/model.js';
 import type {EvidenceStore} from '../infra/evidence.js';
-import {createU2Semantic} from './meituan-semantic.js';
+import {createU2Semantic, nodeLabel} from './meituan-semantic.js';
 import type {U2Semantic,U2Node} from './meituan-semantic.js';
-import {cartIsExplicitlyEmpty,ownedCartRemoveControl} from './cart-safety.js';
-import {observedStore,observedItem,observedSingleBasket,payableEvidenceNodes} from './observed-identity.js';
+import {cartIsExplicitlyEmpty,cartLooksEmpty,ownedCartRemoveControl} from './cart-safety.js';
+import {observedStore,observedStoreName,observedAddressNode,observedItem,observedSingleBasket,payableEvidenceNodes} from './observed-identity.js';
 import {digest,normalize} from '../domain/competition.js';
 import {navigateMeituan, readMeituanSettlement} from './meituan-collect.js';
 
@@ -48,10 +48,39 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
       let cartMayHaveChanged = false;
       let cleanup: AttemptResult['cleanup'] = 'untouched';
       let semantic: U2Semantic | undefined;
-      let storeProof: Evidence | null = null, itemProof: Evidence | null = null;
+      let storeProof: Evidence | null = null, itemProof: Evidence | null = null, storeAddressProof: Evidence | null = null, storeCartProof: Evidence | null = null;
+      let cartEmptyPrecheck: boolean | undefined;
       let actualStore: ReturnType<typeof observedStore> = null;
       let actualItem: ReturnType<typeof observedItem> = null;
       let verifiedLive: AttemptResult['resolvedLive'];
+
+      // 美团底栏（购物车状态）不在 u2 可访问性树里；用系统 uiautomator 全量 dump 取文字。
+      const dumpTexts = async (): Promise<string[]> => {
+        const {execFile} = await import('node:child_process');
+        const {promisify} = await import('node:util');
+        const run = promisify(execFile);
+        const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+        const file = '/sdcard/_takeout_state.xml';
+        // u2 读屏服务会占住 uiautomator，导致 dump 静默失败；dump 前先停 u2，读完语义层会自动重启 u2。
+        await run(adb, ['-s', source.device, 'shell', 'pkill', '-f', 'com.wetest.uia2'], {timeout: 8_000, windowsHide: true}).catch(() => null);
+        await new Promise(r => setTimeout(r, 1_000));
+        await run(adb, ['-s', source.device, 'shell', 'rm', '-f', file], {timeout: 8_000, windowsHide: true}).catch(() => null);
+        await run(adb, ['-s', source.device, 'shell', 'uiautomator', 'dump', '--compressed', file], {timeout: 25_000, windowsHide: true}).catch(() => null);
+        const {stdout} = await run(adb, ['-s', source.device, 'shell', 'cat', file], {timeout: 20_000, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024, windowsHide: true}).catch(() => ({stdout: ''}));
+        return [...stdout.matchAll(/(?:text|content-desc)="([^"]*)"/g)].map(m => m[1]!).filter(Boolean);
+      };
+      const cartBarState = async () => {
+        let texts: string[] = [];
+        // 页面切换动画期间 uiautomator dump 会失败或返回空，重试几次再下结论，不能把“没读到”当成空车。
+        for (let attempt = 0; attempt < 3; attempt++) {
+          texts = await dumpTexts();
+          if (texts.length > 5) break;
+          await new Promise(r => setTimeout(r, 900));
+        }
+        const hasMin = texts.some(t => /起送/.test(t));
+        const hasContent = texts.some(t => /到手约|共减|去结算|已加购商品/.test(t));
+        return {empty: hasMin && !hasContent, hasMin, hasContent, nodes: texts.length, sample: texts.filter(t => /起送|到手约|共减|去结算/.test(t)).slice(0, 6)};
+      };
 
       try {
         emit?.({phase: 'connect', state: 'started'});
@@ -109,20 +138,71 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
           brand,
           itemName,
           onStoreReached: async () => {
-            actualStore=observedStore(await semantic!.read(),brand,live.target.supply.store.city);
-            if (!actualStore) throw new Error('meituan_store_unverified');
+            const menuNodes=await semantic!.read();
+            actualStore=observedStore(menuNodes,brand,live.target.supply.store.city);
+            if(!actualStore){
+              // 美团点菜页只有门店名没有地址；地址在“商家”标签页。先按唯一门店名核对，再补读地址。
+              const named=observedStoreName(menuNodes,brand);
+              if(!named) throw new Error('meituan_store_unverified');
+              let address='';
+              const merchantTab=await semantic!.find(n=>nodeLabel(n).trim()==='商家',3_000).catch(()=>null);
+              if(merchantTab){
+                await semantic!.tap(merchantTab,'商家标签');
+                await semantic!.waitStable(4);
+                const merchantNodes=await semantic!.read();
+                const addressNode=observedAddressNode(merchantNodes,live.target.supply.store.city);
+                if(addressNode){
+                  address=nodeLabel(addressNode).trim();
+                  storeAddressProof=await captureNodes([addressNode],'store_address');
+                }
+                const menuTab=await semantic!.find(n=>nodeLabel(n).trim()==='点菜',3_000).catch(()=>null);
+                if(menuTab){
+                  await semantic!.tap(menuTab,'点菜标签');
+                  // 等点菜页真正加载出来：点菜页有商品行（选套餐/一件即送/神券价），商家页有“网友探店/堂食菜品”。
+                  let onMenu=false;
+                  for(let i=0;i<6 && !onMenu;i++){
+                    await semantic!.waitStable(3);
+                    const labels=(await semantic!.read()).map(n=>nodeLabel(n).trim());
+                    onMenu=labels.some(l=>/选套餐|一件即送|神券价|起送\d|到手约/.test(l)) && !labels.some(l=>/网友探店|堂食菜品|门面/.test(l));
+                    if(!onMenu) await new Promise(r=>setTimeout(r,800));
+                  }
+                  if(!onMenu) throw new Error('store_menu_not_reached');
+                } else throw new Error('store_menu_tab_missing');
+              }
+              actualStore={name:named.name,address,nodes:[named.node]};
+            }
             storeProof=await captureNodes(actualStore.nodes,'store');
+            // 美团门店页底部的购物车栏不在 u2 可访问性树里（u2 读不到“起送/到手约”），
+            // 但系统 uiautomator 全量 dump 能读到，因此用 dump 判断空车：有“起送”且没有“到手约/共减/去结算”。
+            const barState=await cartBarState();
+            console.log('[meituan] 购物车栏状态', JSON.stringify(barState));
+            cartEmptyPrecheck=barState.empty;
+            if(!cartEmptyPrecheck) throw new Error('cart_preflight_unverified');
           },
           onCartMutation: async () => {
-            const nodes=await semantic!.read();
-            if (!cartIsExplicitlyEmpty(nodes)) throw new Error('cart_preflight_unverified');
-            actualItem=observedItem(nodes,itemName,live.target.supply.item.spec ?? '');
-            if (!actualItem) throw new Error('meituan_item_unverified');
-            itemProof=await captureNodes(actualItem.nodes,'item');
+            // 空车前置条件在门店页已经确认；商品列表页读不到购物车栏，不能在这里重新猜。
+            if (cartEmptyPrecheck !== true) throw new Error('cart_preflight_unverified');
             cartMayHaveChanged = true;
             cleanup = 'quarantined';
           },
           searchText: async (text: string) => { await (device as any).search?.(text, signal, true); },
+          // 搜索输入框会保留上一次关键词；用键盘退格清空，避免拼成“板烧鸡腿堡麦当劳”。
+          clearSearchInput: async () => {
+            const {execFile} = await import('node:child_process');
+            const {promisify} = await import('node:util');
+            const run = promisify(execFile);
+            const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+            for (let i = 0; i < 20; i++) {
+              await run(adb, ['-s', source.device, 'shell', 'input', 'keyevent', '67'], {timeout: 5_000, windowsHide: true}).catch(() => null);
+            }
+          },
+          pressEnter: async () => {
+            const {execFile} = await import('node:child_process');
+            const {promisify} = await import('node:util');
+            const run = promisify(execFile);
+            const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+            await run(adb, ['-s', source.device, 'shell', 'input', 'keyevent', '66'], {timeout: 5_000, windowsHide: true}).catch(() => null);
+          },
           // 门店卡在 MRNX 容器里读不到节点，必须把视觉兜底传进去，
           // 否则 navigateMeituan 会直接抛 meituan_store_card_needs_visual。
           visualLocate,
@@ -144,6 +224,12 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
         }
         if (!quote) throw new Error('meituan_no_checkout');
         if (!observedSingleBasket(checkoutNodes,itemName,live.target.supply.item.spec ?? '')) throw new Error('meituan_checkout_item_unverified');
+        // 商品身份以结算页的同一购物篮为准：单据上唯一的商品名+规格+1 件，比在列表页猜更可靠。
+        if (!actualItem) {
+          actualItem=observedItem(checkoutNodes,itemName,live.target.supply.item.spec ?? '');
+          if(!actualItem) throw new Error('meituan_item_unverified');
+          itemProof=await captureNodes(actualItem.nodes,'item');
+        }
         // 只截取已识别的“实付”标签与金额节点，避免将配送地址发送给模型。
         const payableNodes=payableEvidenceNodes(checkoutNodes,quote.raw);
         if (!payableNodes || quote.payable_fen==null) throw new Error('meituan_payable_unverified');
@@ -201,11 +287,17 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
             feesSeparate: null,
             eta: null,
             coupons: null,
-            missing: {},
+            missing: identity.address ? {} : {store_address: '商家页未读到营业地址，本次只按唯一门店名核对实际分店'},
             reconciled: false,
             contextEvidence: evidence,
             storeEvidence: verifiedStoreProof,
             itemEvidence: verifiedItemProof,
+            ...((): {supplementaryEvidence?: Evidence[]} => {
+              const list: Evidence[] = [];
+              if (storeAddressProof) list.push(storeAddressProof);
+              if (storeCartProof) list.push(storeCartProof);
+              return list.length ? {supplementaryEvidence: list} : {};
+            })(),
           },
         };
         status = observation.detail_complete ? 'success' : 'partial';
@@ -222,13 +314,15 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
       if (cartMayHaveChanged && semantic) {
         try {
           await semantic.back();
-          const current=await semantic.read();
-          if (cartIsExplicitlyEmpty(current)) cleanup='restored';
+          await semantic.waitStable(3);
+          const state=await cartBarState();
+          if (state.empty) cleanup='restored';
           else {
-            const remove=ownedCartRemoveControl(current,itemName,live.target.supply.item.spec ?? '');
+            const remove=ownedCartRemoveControl(await semantic.read(),itemName,live.target.supply.item.spec ?? '');
             if (remove) {
               await semantic.tap(remove,'恢复本次商品');
-              if (cartIsExplicitlyEmpty(await semantic.read())) cleanup='restored';
+              await semantic.waitStable(3);
+              if ((await cartBarState()).empty) cleanup='restored';
             }
           }
         } catch { note('cleanup','购物车状态未确认，需要人工核对'); }

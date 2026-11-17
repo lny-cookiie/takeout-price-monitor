@@ -13,6 +13,21 @@ export function observedStore(nodes:U2Node[],brand:string,city:string) {
   return {name:text(names[0]!),address:text(addresses[0]!).replace(/^(商家地址|营业地址)[:：]\s*/,''),nodes:[names[0]!,addresses[0]!]};
 }
 
+/** 只核门店名的分支：地址在“商家”标签页时先单独识别门店名，再由调用方补地址。 */
+export function observedStoreName(nodes:U2Node[],brand:string) {
+  if(!brand)return null;
+  const names=nodes.filter(n=>visible(n)&&normalize(text(n)).includes(normalize(brand))&&/店[）)]?$/.test(text(n)));
+  return names.length===1?{name:text(names[0]!),node:names[0]!}:null;
+}
+
+/** 商家页的营业地址行：唯一一条包含城市且带路/道/号等地址特征的可见文本。 */
+export function observedAddressNode(nodes:U2Node[],city:string) {
+  const cityKey=normalize(city).replace(/市$/,'');
+  if(!cityKey)return null;
+  const candidates=nodes.filter(n=>visible(n)&&text(n).length<=120&&normalize(text(n)).includes(cityKey)&&/(路|街|道|巷|号)/.test(text(n))&&!/配送|预计|收取|联系|电话|营业时间/.test(text(n)));
+  return candidates.length===1?candidates[0]!:null;
+}
+
 /** Reject ambiguous names or missing visible specifications. */
 export function observedItem(nodes:U2Node[],name:string,spec:string) {
   if (!name || !spec) return null;

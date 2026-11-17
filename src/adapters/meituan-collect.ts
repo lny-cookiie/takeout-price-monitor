@@ -110,6 +110,10 @@ export interface MeituanFlowOptions {
   reopenApp?: () => Promise<void>;
   /** 在搜索页用键盘输入并提交关键词（Midscene device.search，已验证支持中文） */
   searchText?: (text: string) => Promise<void>;
+  /** 清空搜索输入框里上一次留下的关键词（键盘退格），避免拼成“板烧鸡腿堡麦当劳” */
+  clearSearchInput?: () => Promise<void>;
+  /** 直接向当前输入框发送回车提交搜索（键盘输入失灵时的兜底） */
+  pressEnter?: () => Promise<void>;
   /** 商品结果区的最小 y（物理像素），用于排除顶部搜索框里的同名文本；默认 200 */
   minItemTop?: number;
   sleep: (ms: number) => Promise<void>;
@@ -246,12 +250,43 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
       && labels.some(l => /综合排序|筛选|销量最高|距离最近/.test(l));
   };
   let searched = false;
+  const brandPresent = async () => {
+    const ns = await semantic.read().catch(() => [] as U2Node[]);
+    return ns.some(n => {
+      const l = nodeLabel(n).trim();
+      // 任何页面只要能读到品牌短文本就继续；门店页标题只有店名没有“月售/评分”，不能因此判失败。
+      return l.includes(brand) && l.length < 80 && !/为您找到|多家|供应|约\s*¥/.test(l);
+    });
+  };
   if (options.searchText) {
-    try {
-      await options.searchText(brand);
+    // 点完“搜索”按钮后先明确点中输入框再输入：输入页有时不会自动聚焦，直接打字会落到空白页。
+    const input = await semantic.find(n => /EditText/i.test(n.cls) || /请输入|搜索商品|搜索品牌|输入/.test(nodeLabel(n)), 5_000).catch(() => null);
+    if (input) {
+      await semantic.tap(input, '搜索输入框');
+      const leftover = nodeLabel(input).trim();
+      console.log('[meituan] 搜索输入框内容', JSON.stringify(leftover), '目标品牌', brand);
+      if (leftover.includes(brand)) {
+        // 输入框已经是目标品牌：直接回车搜索，跳过键盘输入，避免拼串和输入丢失。
+        await options.pressEnter?.();
+        await sleep(1_500);
+        searched = await inResultPage() && await brandPresent();
+      } else if (leftover && !/^(搜索|请输入|搜索商品|搜索品牌|输入)/.test(leftover) && options.clearSearchInput) {
+        await options.clearSearchInput();
+      }
+    }
+    for (let attempt = 0; attempt < 2 && !searched; attempt++) {
+      if (!(input && nodeLabel(input).trim().includes(brand))) {
+        try { await options.searchText(brand); } catch { /* 下一轮重试 */ }
+      }
+      await sleep(1_500);
       searched = await inResultPage();
-    } catch {
-      searched = false;
+      if (searched && !(await brandPresent())) searched = false;
+      if (!searched) {
+        // 键盘输入可能没有落到输入框：直接发回车再试一次。
+        await options.pressEnter?.();
+        await sleep(1_500);
+        searched = await inResultPage() && await brandPresent();
+      }
     }
   }
   if (!searched) {
@@ -274,24 +309,47 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   }
 
   step('搜索结果页门店卡（视觉兜底）');
+  // 结果页必须真的出现该品牌门店；出现的是别的店或推荐流时停止，避免进错门店后一路错下去。
+  if (!(await brandPresent())) {
+    await sleep(2_500);
+    if (!(await brandPresent())) throw new Error('meituan_brand_results_missing');
+  }
+  // 如果搜索历史词/联想词直接把页面带进了门店，就不再找门店卡，直接核对门店身份。
+  const inStorePage = async () => {
+    const labels = (await semantic.read().catch(() => [] as U2Node[])).map(n => nodeLabel(n).trim());
+    return labels.includes('点菜') && labels.includes('商家') && labels.some(l => l.includes(brand));
+  };
+  const alreadyInStore = await inStorePage();
+  if (alreadyInStore) console.log('[meituan] 搜索已直接进入门店页，跳过门店卡点击');
+  {
+    // 诊断日志：结果页是否可读、可读到哪些文字，用于定位门店卡选择失败的具体原因。
+    try {
+      const probe = await semantic.read();
+      const labels = probe.map(n => nodeLabel(n).trim()).filter(Boolean);
+      console.log('[meituan] 结果页节点数', probe.length, '样例', JSON.stringify(labels.slice(0, 30)));
+    } catch (error) {
+      console.log('[meituan] 结果页读取失败', (error as Error).message);
+    }
+  }
+  if (!alreadyInStore) {
   // 层级 1：语义精确门店卡（desc 通常带评分/配送费，长度明显更长）；
   // 层级 2：视觉定位。搜索联想词（如“麦当劳＆麦咖啡外卖点击可发起搜索”）不能用语义命中。
   // 搜索结果页是原生页面（实测 read 可读到“麦当劳/评分/月售”），语义优先；视觉仅兜底。
   // 之前只匹配“品牌+麦咖啡”过窄，导致可用语义命中被浪费、被迫依赖不稳定的视觉模型。
   const storeCardExact = await semantic.find(
     n => {
-      const l = nodeLabel(n);
-      if (!l.includes(brand)) return false;
-      // 排除搜索框/历史词/推荐词这类非门店节点
-      if (/进入搜索|搜索框|历史|猜你想|为你推荐/.test(l)) return false;
+      const l = nodeLabel(n).trim();
+      if (!l.includes(brand) || l.length > 120) return false;
+      // 排除搜索框/历史词/推荐词/AI 回答这类非门店节点
+      if (/进入搜索|搜索框|历史|猜你想|为你推荐|为您找到|多家|供应|AI|小团/.test(l)) return false;
       return /分|评分|配送|起送|\d+\.\d+|月售|km|进店/.test(l);
     },
     8_000,
   ) ?? await semantic.find(
     n => {
-      const l = nodeLabel(n);
-      if (!l.includes(brand)) return false;
-      if (/进入搜索|搜索框|历史|猜你想/.test(l)) return false;
+      const l = nodeLabel(n).trim();
+      if (!l.includes(brand) || l.length > 120) return false;
+      if (/进入搜索|搜索框|历史|猜你想|为您找到|多家|供应|AI|小团/.test(l)) return false;
       return n.top > 200; // 门店卡在页面中下部
     },
     6_000,
@@ -328,6 +386,8 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
       const {stdout} = await run(adb, ['-s', serial, 'shell', 'dumpsys window | grep mCurrentFocus'],
         {timeout: 8_000, encoding: 'utf8'}).catch(() => ({stdout: ''}));
       const act = String(stdout);
+      // 误点进 AI 小团问答页时必须停下，不能把问答页当门店继续操作。
+      if (/aixiaotuan|AiSmallTuan/i.test(act)) throw new Error('meituan_wrong_page_entered');
       if (!/SearchResultActivity|search\.result|search\.home\.SearchActivity/i.test(act)) {
         // 已经不在结果页/搜索页 → 视为进店成功
         const m = /\s([\w.]+\/[\w.$]+)\}/.exec(act);
@@ -337,6 +397,7 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
       await sleep(700);
     }
     if (!entered) throw new Error('meituan_store_not_entered');
+  }
   }
   await options.onStoreReached?.();
   step('门店页搜索图标');
@@ -379,18 +440,42 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   if (!enteredShopSearch) throw new Error('meituan_no_shop_search');
 
   step('店内搜索热门词');
-  // 店内搜索页是 MRNX 自绘容器，读屏不可用：优先视觉点热门词，语义仅作兜底。
-  const hotSemantic = await semantic.find(n => nodeLabel(n).trim() === itemName, 4_000).catch(() => null);
-  if (hotSemantic) {
-    await semantic.tap(hotSemantic, `热门 ${itemName}`);
-  } else if (options.visualLocate) {
-    const hotHit = await options.visualLocate(`搜索结果里“${itemName}”这个热门搜索词/商品名`);
-    if (!hotHit) throw new Error('meituan_no_hot_word');
-    await options.tapPoint(hotHit.x, hotHit.y);
-    await sleep(1_800);
-  } else {
-    throw new Error('meituan_no_hot_word');
+  // 店内搜索页是 MRNX 自绘容器，读屏不稳定。最可靠的是把单品名直接打进店内搜索框并提交；
+  // 点热门词容易点错（曾误点到“奥利奥旋风”），只作为兜底。
+  const itemResults = async () => {
+    const ns = await semantic.read().catch(() => [] as U2Node[]);
+    return ns.some(n => {
+      const l = nodeLabel(n).trim();
+      return (l === itemName || l.startsWith(itemName)) && l.length < 60 && /月售|¥|神券价|选套餐|一件即送/.test(ns.map(v => nodeLabel(v)).join('|'));
+    });
+  };
+  let hasResults = false;
+  if (options.searchText) {
+    const input = await semantic.find(n => /EditText/i.test(n.cls) || /请输入商品|搜索商品|热门搜索|搜索/.test(nodeLabel(n)), 4_000).catch(() => null);
+    if (input) {
+      await semantic.tap(input, '店内搜索输入框');
+      if (options.clearSearchInput) await options.clearSearchInput();
+      await options.searchText(itemName);
+      await sleep(1_800);
+      hasResults = await itemResults();
+    }
   }
+  if (!hasResults) {
+    const hotSemantic = await semantic.find(n => nodeLabel(n).trim() === itemName, 4_000).catch(() => null);
+    if (hotSemantic) {
+      await semantic.tap(hotSemantic, `热门 ${itemName}`);
+      await sleep(1_800);
+      hasResults = await itemResults();
+    } else if (options.visualLocate) {
+      const hotHit = await options.visualLocate(`搜索结果里“${itemName}”这个热门搜索词/商品名`);
+      if (hotHit) {
+        await options.tapPoint(hotHit.x, hotHit.y);
+        await sleep(1_800);
+        hasResults = await itemResults();
+      }
+    }
+  }
+  if (!hasResults) throw new Error('meituan_no_item_results');
 
   step('单品');
   await options.onCartMutation?.();

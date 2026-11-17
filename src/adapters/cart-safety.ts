@@ -11,6 +11,18 @@ export function cartIsExplicitlyEmpty(nodes:U2Node[]):boolean {
     !labels.some(value=>/^(共[1-9]\d*件|[1-9]\d*件商品|购物车[1-9]\d*件)$/.test(value));
 }
 
+/**
+ * 门店页底部购物车栏的空车判断：空车时显示“¥20起送”等起送文案，没有“到手约/共减/去结算”与商品件数。
+ * 面板打开时仍以明确的空车标签为准；这是面板不可读时的补充判据，不能反过来覆盖明确空车标签。
+ */
+export function cartLooksEmpty(nodes:U2Node[]):boolean {
+  if(cartIsExplicitlyEmpty(nodes))return true;
+  const labels=nodes.map(label);
+  const hasMinDelivery=labels.some(value=>/起送/.test(value));
+  const hasCartContent=labels.some(value=>/到手约|共减|去结算|购物车.*[1-9]\d*件|已加购商品/.test(value));
+  return hasMinDelivery && !hasCartContent;
+}
+
 /** Require a visible cart, one explicitly counted item and a unique matching minus control. */
 export function ownedCartRemoveControl(nodes:U2Node[],item:string,spec:string):U2Node|null {
   const labels=nodes.map(label);
