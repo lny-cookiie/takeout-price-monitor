@@ -100,17 +100,18 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     return png;
   };
 
-    const readCropLines = async (tag: string, topRatio: number, bottomRatio: number) => {
+    const readCropLines = async (tag: string, topRatio: number, bottomRatio: number, opts: {maxLines?: number; maxTokens?: number} = {}) => {
       const full = await snap(tag);
       const meta = await sharp(full).metadata();
       const width = meta.width ?? W, height = meta.height ?? H;
       const top = Math.round(height * topRatio);
       const cropH = Math.max(60, Math.round(height * (bottomRatio - topRatio)));
       const crop = await sharp(full).extract({left: 0, top, width, height: cropH}).resize({width: 900}).png().toBuffer();
+      const maxLines = opts.maxLines ?? 15;
       const content = await o.model.text('taobao_instant', 'taobao_crop_lines',
-        '把这张截图里从上到下的可见文字按行原样输出，每行一条，最多 15 行；不要编号、不要总结、不要判断。',
-        {image: crop, signal: activeSignal, maxTokens: 500});
-      return content.split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 15);
+        `把这张截图里从上到下的可见文字按行原样输出，每行一条，最多 ${maxLines} 行；不要编号、不要总结、不要判断。`,
+        {image: crop, signal: activeSignal, maxTokens: opts.maxTokens ?? 500});
+      return content.split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, maxLines);
     };
   /** 两帧截图的 48×48 灰度平均绝对差；用于判断“页面是否真的变了”，不依赖模型。 */
   const screenMAD = async (a: Buffer, b: Buffer) => {
@@ -291,10 +292,17 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     }
     if (s2 && !s3) {
       log('  [results] 回车未进入结果页，改点橙色搜索按钮');
-      const tapped = await tapByVision('橙色底白色“搜索”按钮', 'brand-search', {yMin: Math.round(H*0.04), yMax: Math.round(H*0.13), cropTopRatio: 0.03, cropBottomRatio: 0.15});
+      // 搜索按钮固定在右上角；不收横向约束时模型会点到页面里其它“搜索”字样（真机点到了 x≈104 的左侧文字）。
+      const tapped = await tapByVision('橙色底白色“搜索”按钮', 'brand-search', {xMin: Math.round(W * 0.62), xMax: W - 10, yMin: Math.round(H*0.04), yMax: Math.round(H*0.13), cropTopRatio: 0.03, cropBottomRatio: 0.15});
       if (tapped) {
         await sleep(2_200);
         try { s3 = looksLikeResults((await readLines('results-check-2')).lines); } catch (error) { log('  [results] 第二次读取失败：' + (error as Error).message); }
+        if (!s3) {
+          log('  [results] 仍未进入结果页，再补一次回车');
+          await adb(['shell', 'input', 'keyevent', '66']);
+          await sleep(2_000);
+          try { s3 = looksLikeResults((await readLines('results-check-3')).lines); } catch (error) { log('  [results] 第三次读取失败：' + (error as Error).message); }
+        }
       }
     }
     mark('搜索品牌', !!s3, `${brand} 注入=${typedBrand}${s3 ? '' : '，未进入结果页'}`);
@@ -327,8 +335,8 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
         log('  [store-brand] 视觉定位失败，退回标签栏比例坐标');
         await adb(['shell', 'input', 'tap', String(Math.round(W * 0.45)), String(Math.round(H * 0.12))]);
       }
-      await sleep(2_200);
-      const brandLines = await readCropLines('store-brand-lines', 0.06, 0.45).catch(() => [] as string[]);
+      await sleep(1_700);
+      const brandLines = await readCropLines('store-brand-lines', 0.05, 0.50, {maxLines: 26, maxTokens: 900}).catch(() => [] as string[]);
       log(`  [store] 品牌页可见行：${brandLines.slice(0, 14).join(' / ')}`);
       const clean = (line: string) => line.replace(/>+\s*$/g, '').replace(/\s*堂食店\s*$/g, '').trim();
       const storeName = (brandLines.find(line => line.includes(brand) && /店/.test(line) && line.length < 60) ?? null) && clean(brandLines.find(line => line.includes(brand) && /店/.test(line) && line.length < 60)!);
@@ -463,11 +471,13 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
       const png = await snap(tag);
       const content = await o.model.text('taobao_instant', 'taobao_checkout_lines',
         '把这张结算页截图里所有可见文字按行原样输出，最多 30 行；金额、商品名、门店名都要按原样保留。不要总结、不要判断。',
-        {image: png, signal: activeSignal, maxImageWidth: 900, maxTokens: 700});
+        {image: png, signal: activeSignal, maxImageWidth: 800, maxTokens: 650});
       return {lines: content.split(/\r?\n/).map(v => v.trim()).filter(Boolean), png};
     };
     const firstRead = await readCheckoutLines('checkout-read-1');
-    const secondRead = await readCheckoutLines('checkout-read-2');
+    // 第二次只读底部金额栏（约 2-3 秒），不用整页再读一遍，给 240 秒预算留余量。
+    const bottomLines = await readCropLines('checkout-read-2', 0.72, 1).catch(() => [] as string[]);
+    const secondRead = {lines: bottomLines, png: firstRead.png};
     // 隐私：收货地址、收件人、手机号一律不写日志、不落证据文字；门店地址是商家信息，保留。
     const redact = (line: string) => line
       .replace(/\d{11}/g, '***')
