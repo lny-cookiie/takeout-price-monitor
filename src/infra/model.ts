@@ -37,10 +37,15 @@ export class ModelGateway {
         yuan:inputTokens === null || outputTokens === null || inputRate === undefined || outputRate === undefined ? null : (inputTokens*inputRate + outputTokens*outputRate)/1_000_000});
     }
   }
-  async json<T>(scope: string, operation: string, instruction: string, data: unknown, check: (v: unknown) => T, options: { signal?: AbortSignal; image?: Buffer; evidenceIds?: string[];schema?:object } = {}) {
+  async json<T>(scope: string, operation: string, instruction: string, data: unknown, check: (v: unknown) => T, options: { signal?: AbortSignal; image?: Buffer; evidenceIds?: string[];schema?:object;maxImageWidth?:number } = {}) {
     return this.call(scope,operation,digest([instruction,data,options.schema,options.image?.toString('base64')]),options.evidenceIds ?? [],async (cfg,report) => {
       const signal = AbortSignal.any([AbortSignal.timeout(90_000),...(options.signal ? [options.signal] : [])]);
-      const content = [{type:'text',text:JSON.stringify(data)},...(options.image ? [{type:'image_url',image_url:{url:'data:image/png;base64,'+options.image.toString('base64')}}] : [])];
+      let image = options.image;
+      if (image && options.maxImageWidth) {
+        const meta = await sharp(image).metadata();
+        if (meta.width && meta.width > options.maxImageWidth) image = await sharp(image).resize({width: options.maxImageWidth}).png().toBuffer();
+      }
+      const content = [{type:'text',text:JSON.stringify(data)},...(image ? [{type:'image_url',image_url:{url:'data:image/png;base64,'+image.toString('base64')}}] : [])];
       let res: Response;
       try {
         res = await fetch(cfg.baseUrl+'/chat/completions',{
@@ -56,10 +61,53 @@ export class ModelGateway {
         report(result.usage);
         const content = result.choices?.[0]?.message?.content;
         if (typeof content !== 'string' || content.length > 30_000) throw new Error();
-        return check(JSON.parse(content));
+        // 本地 2B 模型偶尔在 JSON 外包一层说明或代码围栏；先直接解析，失败再从文本里截取最外层对象重试。
+        try { return check(JSON.parse(content)); } catch {
+          const match = /\{[\s\S]*\}/.exec(content);
+          if (!match) throw new Error();
+          return check(JSON.parse(match[0]!));
+        }
       } catch { throw new Error('model_invalid_output'); }
     });
   }
+  /**
+   * 纯文本读取：不要求模型输出 JSON，直接把可见文字原样返回。
+   * 本地 2B 模型在 JSON 约束下容易一直生成到 max_tokens 上限导致截断，OCR 类任务用文本通道更稳。
+   */
+  async text(scope: string, operation: string, instruction: string, options: {signal?:AbortSignal;image?:Buffer;maxImageWidth?:number;maxTokens?:number} = {}) {
+    return this.call(scope, operation, digest([instruction, options.image?.toString('base64') ?? '']), [], async (cfg, report) => {
+      const signal = AbortSignal.any([AbortSignal.timeout(90_000), ...(options.signal ? [options.signal] : [])]);
+      let image = options.image;
+      if (image && options.maxImageWidth) {
+        const meta = await sharp(image).metadata();
+        if (meta.width && meta.width > options.maxImageWidth) image = await sharp(image).resize({width: options.maxImageWidth}).png().toBuffer();
+      }
+      let res: Response;
+      try {
+        res = await fetch(cfg.baseUrl + '/chat/completions', {
+          method: 'POST', redirect: 'error', signal,
+          headers: {Authorization: 'Bearer ' + cfg.key, 'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            model: cfg.model,
+            max_tokens: options.maxTokens ?? 500,
+            temperature: 0,
+            ...(cfg.family.startsWith('qwen') ? {enable_thinking: false} : {}),
+            messages: [
+              {role: 'system', content: '只依据截图里明确可见的内容回答，不猜测、不补全。' + instruction},
+              {role: 'user', content: [{type: 'text', text: '开始读取。'}, ...(image ? [{type: 'image_url', image_url: {url: 'data:image/png;base64,' + image.toString('base64')}}] : [])]}
+            ]
+          })
+        });
+      } catch { throw new Error(signal.aborted ? 'model_timeout_or_cancelled' : 'network_error'); }
+      if (!res.ok) throw new Error('model_http_' + res.status);
+      const result = await res.json() as {usage?:Usage; choices?:{message?:{content?:string}}[]};
+      report(result.usage);
+      const content = result.choices?.[0]?.message?.content;
+      if (typeof content !== 'string') throw new Error('model_invalid_output');
+      return content.trim();
+    });
+  }
+
   async locate(scope: string, image: Buffer, text: string, signal: AbortSignal, evidenceIds: string[] = []) {
     return this.call(scope,'page_location',digest([text,image.toString('base64')]),evidenceIds,async (cfg,report) => {
       // 全屏截图（1.9MB 级）会让本地 2B 视觉模型处理超时；先缩到 640 宽再定位，坐标按比例还原。
@@ -86,7 +134,17 @@ export class ModelGateway {
         signal.throwIfAborted();
         const [cx, cy] = result.center;
         return [cx * scaleX, cy * scaleY] as [number, number];
-      } catch (cause) { throw new Error('model_location_failed',{cause}); }
+      } catch (cause) {
+        // 定位失败时保留最后一次实际发送的截图与提示词，便于离线复现，不再靠猜。
+        try {
+          const {writeFile} = await import('node:fs/promises');
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          await writeFile(`.runtime/locate-fail-${stamp}.png`, shrunk);
+          await writeFile(`.runtime/locate-fail-${stamp}.txt`, `scope=${scope}\nhint=${text}\nsize=${width}x${height}\n`);
+        } catch { /* 诊断保存失败不影响主流程 */ }
+        console.log('[locate] 失败原因', (cause as Error)?.message ?? String(cause));
+        throw new Error('model_location_failed',{cause});
+      }
       finally { await agent.destroy(); }
     });
   }

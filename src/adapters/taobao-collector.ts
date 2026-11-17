@@ -19,7 +19,7 @@ import {installedAppVersion} from './android-transport.js';
 export interface TaobaoCollectorOptions {
   sources: AndroidSources;
   evidence: EvidenceStore;
-  model: Pick<ModelGateway, 'status' | 'locate' | 'json'>;
+  model: Pick<ModelGateway, 'status' | 'locate' | 'json' | 'text'>;
   /** adb 可执行文件，通常取 MIDSCENE_ADB_PATH */
   adbPath: string;
   /** 设备序列号 */
@@ -92,9 +92,10 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
       const live = task.live!;
       const brand = live.target.supply.store.brand;
       const itemName = live.target.supply.item.name;
-      // 门店关键字取登记门店名里有区分度的一段，例如「鞍山西」
+      // v2 试点允许同城同品牌不同分店：不强制命中登记的负责门店编号，只要求同品牌同城，
+      // 实际分店以进入后的页面核对为准（不允许串品牌或串城市）。
       const storeName = live.target.supply.store.name;
-      const storeKeyword = storeName.replace(/^.*?[（(]/, '').replace(/[)）].*$/, '').replace(/(店|分店)$/, '') || undefined;
+      const storeKeyword = undefined;
 
       let quote: Awaited<ReturnType<typeof collectTaobao>> | null = null;
       let status: AttemptResult['status'] = 'failed';

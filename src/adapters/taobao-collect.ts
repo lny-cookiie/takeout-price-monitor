@@ -10,6 +10,7 @@ import {flatten} from './android-page.js';
 import {cartIsExplicitlyEmpty,ownedCartRemoveControl} from './cart-safety.js';
 import {observedStore,observedItem,observedSingleBasket,payableEvidenceNodes} from './observed-identity.js';
 import {readMeituanSettlement} from './meituan-collect.js';
+import {normalize} from '../domain/competition.js';
 import type {EvidenceStore} from '../infra/evidence.js';
 import type {Evidence} from '../domain/contracts.js';
 import {randomUUID} from 'node:crypto';
@@ -54,7 +55,7 @@ export interface TaobaoCollectOptions {
   onCleanup: (state:'untouched'|'restored'|'quarantined')=>void;
   /** 目标门店名关键字，例如「鞍山西道」；为空则取搜索结果第一家 */
   storeKeyword?: string;
-  model: Pick<ModelGateway, 'locate' | 'json'>;
+  model: Pick<ModelGateway, 'locate' | 'json' | 'text'>;
   /** yadb 可执行文件路径（Midscene 自带） */
   yadbPath: string;
   signal?: AbortSignal;
@@ -95,6 +96,19 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     W = m.width; H = m.height;
     return png;
   };
+
+    const readCropLines = async (tag: string, topRatio: number, bottomRatio: number) => {
+      const full = await snap(tag);
+      const meta = await sharp(full).metadata();
+      const width = meta.width ?? W, height = meta.height ?? H;
+      const top = Math.round(height * topRatio);
+      const cropH = Math.max(60, Math.round(height * (bottomRatio - topRatio)));
+      const crop = await sharp(full).extract({left: 0, top, width, height: cropH}).resize({width: 900}).png().toBuffer();
+      const content = await o.model.text('taobao_instant', 'taobao_crop_lines',
+        '把这张截图里从上到下的可见文字按行原样输出，每行一条，最多 15 行；不要编号、不要总结、不要判断。',
+        {image: crop, signal: activeSignal, maxTokens: 500});
+      return content.split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 15);
+    };
   const captureNodes=async(nodes:U2Node[],stage:string):Promise<Evidence>=>{
     const png=await snap(stage), fresh=await readNodes();
     if (nodes.some(n=>!fresh.some(v=>v.text===n.text && v.desc===n.desc && v.left===n.left && v.top===n.top && v.width===n.width && v.height===n.height)))
@@ -206,7 +220,16 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     mark('冷启动淘宝', true);
 
     // 1 首页 →「闪购外卖」tab
-    const s1 = await tapByVision('页面顶部 tab 栏里“闪购外卖”四个字（“推荐”右侧相邻那项，黄色“闪购”+红底“外卖”）', 'flash-tab', {yMin: Math.round(H*0.04), yMax: Math.round(H*0.11), cropTopRatio: 0.02, cropBottomRatio: 0.13});
+    // 冷启动后的首页偶尔会自己跳回“推荐”页或弹活动层：点完闪购必须确认页面真的变了，再继续。
+    let s1 = false;
+    for (let i = 0; i < 3 && !s1; i++) {
+      const tapped = await tapByVision('页面顶部 tab 栏里“闪购外卖”四个字（“推荐”右侧相邻那项，黄色“闪购”+红底“外卖”）', i === 0 ? 'flash-tab' : `flash-tab-${i + 1}`, {yMin: Math.round(H*0.04), yMax: Math.round(H*0.11), cropTopRatio: 0.02, cropBottomRatio: 0.13}, 1);
+      if (!tapped) continue;
+      await sleep(1_800);
+      const lines = await readCropLines(`flash-check-${i + 1}`, 0, 0.30).catch(() => [] as string[]);
+      s1 = lines.some(l => /闪购/.test(l) && /外卖|超值|送到家/.test(l));
+      if (!s1) log(`  [flash-tab] 第${i + 1}次点击后仍未进入闪购频道，重试`);
+    }
     mark('进入闪购频道', s1);
     if (!s1) return {store: null, item: null, originalFen: null, discountFen: null, packagingFen: null, deliveryFen: null, redPacketFen: null, totalFen: null, steps, rawText: null};
 
@@ -215,10 +238,49 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     mark('打开搜索框', s2);
 
     // 3 输入品牌并搜索
+    // 淘宝的搜索建议页和搜索结果页在视觉上差别明显：结果页有“综合/销量/速度”排序栏，
+    // 建议页有“历史搜索/搜索发现/专属好店”。不靠模型判断，只让它原样读文字行，由代码判定。
     const typedBrand = s2 && await typeChinese(brand);
-    await sleep(1500);
-    const s3 = s2 && await tapByVision('页面顶部橙色底、白色“搜索”两个字的按钮', 'brand-search', {yMin: Math.round(H*0.04), yMax: Math.round(H*0.13), cropTopRatio: 0.03, cropBottomRatio: 0.15});
-    mark('搜索品牌', !!s3, `${brand} 注入=${typedBrand}`);
+    log(`  [type] 品牌注入=${typedBrand}`);
+    await sleep(800);
+    const readLines = async (tag: string) => {
+      const png = await snap(tag);
+      // 走纯文本通道：本机 2B 模型在 JSON 约束下曾一直生成到 1800 token 上限后截断，输出变成非法 JSON。
+      // 这里只要它把可见文字按行返回，代码自己做判断；失败重试一次，仍失败返回空行。
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const content = await o.model.text('taobao_instant', 'taobao_visible_lines',
+            '把这张截图里从上到下的可见文字按行原样输出，行与行之间换行，最多 20 行；不要编号、不要总结、不要判断。',
+            {image: png, signal: activeSignal, maxImageWidth: 800, maxTokens: 600});
+          const lines = content.split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 25);
+          return {lines, png};
+        } catch (error) {
+          log(`  [lines] 读取失败（第 ${attempt + 1} 次）：` + (error as Error).message);
+          if (attempt >= 1) return {lines: [] as string[], png};
+          await sleep(700);
+        }
+      }
+    };
+    const looksLikeResults = (lines: string[]) => {
+      const text = lines.join('\n');
+      return /综合/.test(text) && /销量/.test(text) && /速度/.test(text) && !/历史搜索|搜索发现|专属好店/.test(text);
+    };
+    let s3 = false;
+    if (s2 && typedBrand) {
+      await adb(['shell', 'input', 'keyevent', '66']);
+      await sleep(2_200);
+      try { s3 = looksLikeResults((await readLines('results-check-1')).lines); } catch (error) { log('  [results] 第一次读取失败：' + (error as Error).message); }
+    }
+    if (s2 && !s3) {
+      log('  [results] 回车未进入结果页，改点橙色搜索按钮');
+      const tapped = await tapByVision('页面顶部橙色底、白色“搜索”两个字的按钮', 'brand-search', {yMin: Math.round(H*0.04), yMax: Math.round(H*0.13), cropTopRatio: 0.03, cropBottomRatio: 0.15});
+      if (tapped) {
+        await sleep(2_200);
+        try { s3 = looksLikeResults((await readLines('results-check-2')).lines); } catch (error) { log('  [results] 第二次读取失败：' + (error as Error).message); }
+      }
+    }
+    mark('搜索品牌', !!s3, `${brand} 注入=${typedBrand}${s3 ? '' : '，未进入结果页'}`);
+    if (!s3) return {store: null, item: null, originalFen: null, discountFen: null, packagingFen: null, deliveryFen: null, redPacketFen: null, totalFen: null, steps, rawText: null};
 
     // 4 结果页 → 目标门店（y 区间避开顶部“超抢手”广告位）
     // 提示词用「门店卡片独有特征」锚定，不要用“以麦当劳开头”这种描述：
@@ -232,21 +294,64 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 上界 26% 排掉顶部搜索框与“超抢手”广告位；下界 58% 排掉门店卡下方的横向商品图区
     // （那里也有“板烧鸡腿堡”和价格，实测模型会被吸过去，给出 y≈0.70H 的错误坐标）。
     // 全部用屏幕高度的比例表达，不引入绝对像素，换机型自动适配。
-    let s4 = s3 && await tapByVision(storeHint, 'store',
-      {xMin: Math.round(W * 0.22), xMax: Math.round(W * 0.92),
-       yMin: Math.round(H * 0.27), yMax: Math.round(H * 0.56),
-       cropTopRatio: 0.26, cropBottomRatio: 0.58});
-    if (!s4) {
-      // 兜底：部分活动页门店卡片会下移，放宽上界再试一次；下界仍留在 0.28H 以排除顶部“超抢手”广告位。
-      log('  [store] 首轮未命中，放宽 y 上界重试');
-      // 兜底：个别活动页门店卡更靠下，放宽下界到 66%，但仍排掉商品图主体区。
-      s4 = s3 && await tapByVision(storeHint, 'store-2',
-        {yMin: Math.round(H * 0.25), yMax: Math.round(H * 0.64), cropTopRatio: 0.22, cropBottomRatio: 0.66}, 2);
-    }
+    // 2026-11-17 真机实测：较窄的裁剪（26%~58%）连续 3 次定位超时，而较宽裁剪一次命中；
+    // 直接用宽裁剪，避免每次浪费 60 秒超时。
+    const s4 = s3 && await tapByVision(storeHint, 'store',
+      {yMin: Math.round(H * 0.25), yMax: Math.round(H * 0.64), cropTopRatio: 0.22, cropBottomRatio: 0.66}, 2);
     if (s4) {
-      actualStore=observedStore(await readNodes(),brand,o.city);
-      if (!actualStore) throw new Error('taobao_store_unverified');
-      storeEvidence=await captureNodes(actualStore.nodes,'store');
+      // 诊断：点击门店卡后立即保存整屏截图与前台 Activity，用于判断到底进了哪一页。
+      try {
+        const {writeFile} = await import('node:fs/promises');
+        await writeFile('.runtime/tb-store-after-click.png', await snap('store-after-click'));
+        const focus = String(await adb(['shell', 'dumpsys', 'window'])).split('\n').filter(l => l.includes('mCurrentFocus')).join('\n');
+        log('  [store] 点击后前台 ' + focus.trim().slice(0, 160));
+      } catch { /* 诊断不影响主流程 */ }
+      try { actualStore=observedStore(await readNodes(),brand,o.city); } catch { actualStore=null; }
+      if (!actualStore) {
+        // 淘宝门店页是 Flutter/MRNX 自绘，u2 读不到文字；视觉定位能进店，但让 2B 模型“判断门店名和地址”
+        // 会读到配送地址（北京市朝阳区）并幻觉。改为滑到门店页顶部，让模型只逐行读可见文字，
+        // 由代码在文字行里找“品牌+店”的门店名和含城市的地址行。
+        let storeName: string | null = null;
+        let storeAddress: string | null = null;
+        let storePng: Buffer | null = null;
+        for (let i = 0; i < 2 && (!storeName || !storeAddress); i++) {
+          await adb(['shell', 'input', 'swipe', String(Math.round(W / 2)), String(Math.round(H * 0.32)), String(Math.round(W / 2)), String(Math.round(H * 0.92)), '420']);
+          await sleep(1_800);
+          const shot = await readLines(`store-verify-${i + 1}`);
+          log(`  [store] 顶部可见行：${shot.lines.slice(0, 12).join(' / ')}`);
+          const nameLine = shot.lines.find(l => l.includes(brand) && /店/.test(l) && l.length < 60) ?? null;
+          const addressLine = shot.lines.find(l => /天津/.test(l) && /(路|道|街|号)/.test(l)) ?? null;
+          if (!storeName && nameLine) storeName = nameLine;
+          if (!storeAddress && addressLine) storeAddress = addressLine;
+          if (!storePng && (nameLine || addressLine)) storePng = shot.png;
+        }
+        const cityKey = normalize(o.city).replace(/市$/, '');
+        const nameOk = !!storeName && normalize(storeName).includes(normalize(brand));
+        const addrOk = !!storeAddress && !!cityKey && normalize(storeAddress).includes(cityKey);
+        log(`  [store] 识别门店=${storeName ?? '未读到'} 地址=${storeAddress ?? '未读到'}`);
+        // 淘宝门店页顶部不显示门店名称和地址（真机截图确认只有搜索框与点餐/评价/品牌三个标签）。
+        // 门店身份改到结算页核对；这里先保留进店页截图作为证据，不伪造门店名。
+        const png = storePng ?? await snap('store-verify-last');
+        const floor = Math.round(H * 0.18);
+        const masked = await sharp(png).composite([{input: await sharp({create: {width: W, height: floor, channels: 3, background: '#121719'}}).png().toBuffer(), left: 0, top: 0}]).png().toBuffer();
+        if (nameOk && addrOk) {
+          actualStore = {name: storeName!, address: storeAddress!, nodes: []};
+          storeEvidence = await o.evidence.save(randomUUID(), 'store', masked, `门店名称：${storeName}\n营业地址：${storeAddress}`, 'live');
+        } else {
+          storeEvidence = await o.evidence.save(randomUUID(), 'store_entry', masked, '门店页未显示门店名和地址，门店身份待结算页核对', 'live');
+          log('  [store] 门店页未显示店名/地址，改为结算页核对');
+        }
+      } else {
+        storeEvidence = await captureNodes(actualStore.nodes, 'store');
+      }
+    }
+    // 购物车底栏同样不在读屏树里；用底栏截图文字判断空车（空车显示“¥20起送/另需配送费”，有商品显示“去结算/到手约”）。
+    let cartEmptyPrecheck = false;
+    if (s4) {
+      const bottomLines = await readCropLines('cartbar', 0.78, 1).catch(() => [] as string[]);
+      log(`  [cart] 底栏可见行：${bottomLines.slice(0, 8).join(' / ')}`);
+      cartEmptyPrecheck = bottomLines.some(l => /起送/.test(l)) && !bottomLines.some(l => /去结算|到手约|共减/.test(l));
+      if (!cartEmptyPrecheck) throw new Error('cart_preflight_unverified');
     }
     mark('进入目标门店', !!s4);
 
@@ -269,8 +374,8 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 导致标定坐标点空（2026-11-12 复现：加了 swipe 后停在结果页，去掉后正常进入单品详情页）。
     let s7 = false;
     if (s6) {
+      if (!cartEmptyPrecheck) throw new Error('cart_preflight_unverified');
       const nodes=await readNodes();
-      if (!cartIsExplicitlyEmpty(nodes)) throw new Error('cart_preflight_unverified');
       actualItem=observedItem(nodes,itemName,o.itemSpec);
       if (!actualItem) throw new Error('taobao_item_unverified');
       itemEvidence=await captureNodes(actualItem.nodes,'item');

@@ -10,14 +10,18 @@ import { AndroidUiTreeReader } from './android-uitree.js';
 const run=promisify(execFile);
 const adb=()=>process.env.MIDSCENE_ADB_PATH || 'adb';
 export async function requireAndroidForeground(shell:()=>Promise<string>,target:string,signal:AbortSignal){
+  // 页面切换瞬间 dumpsys 可能短暂报告桌面、null 或系统弹层；重试几次再判定，
+  // 避免把过渡态误判成“目标 App 不在前台”而中断整次采集。
+  let lastComponent: string | undefined;
   for(let attempt=0;attempt<3;attempt++){
     signal.throwIfAborted();
     const dump=await shell(),line=dump.split(/\r?\n/).find(value=>/mCurrentFocus=Window/.test(value));
     const component=line?/[a-zA-Z][\w.]*(?:\.[\w.]+)+\/[\w.$]+/.exec(line)?.[0]:undefined;
+    lastComponent=component;
     if(component?.split('/')[0]===target)return;
-    if(component)throw new CollectionError('target_app_not_foreground','blocked');
-    if(attempt<2)await wait(150,undefined,{signal});
+    if(attempt<2)await wait(400,undefined,{signal});
   }
+  if(lastComponent)throw new CollectionError('target_app_not_foreground','blocked');
   throw new CollectionError('foreground_state_unknown','blocked');
 }
 export async function deviceInventory(signal?:AbortSignal) {
