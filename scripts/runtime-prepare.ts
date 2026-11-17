@@ -7,7 +7,7 @@ import {request} from 'node:http';
 import {AndroidUiTreeReader} from '../src/adapters/android-uitree.js';
 
 const run = promisify(execFile);
-const ADB = process.env.MIDSCENE_ADB_PATH ?? 'D:/vibecoding/takeout_price_competition/.runtime/adb-official-probe/platform-tools/adb.exe';
+const ADB = process.env.MIDSCENE_ADB_PATH ?? 'D:/vibecoding/03-TakeoutUE-外卖竞争监测/app/.runtime/adb-official-probe/platform-tools/adb.exe';
 const SERIAL = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
 const PORT = 9008;
 const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 19), ...a);

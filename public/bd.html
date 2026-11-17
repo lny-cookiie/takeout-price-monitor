@@ -2,7 +2,7 @@
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><meta name="description" content="BD 报价采集：输入城市、品牌、门店与爆品，勾选平台后开始采集并实时查看进度。"><title>BD 报价采集 · 三平台比价</title><link rel="stylesheet" href="/ue.css"><link rel="stylesheet" href="/bd.css"></head><body><a class="skip" href="#main">跳转到内容</a>
 <header class="topbar"><div class="brand"><span class="brand-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>BD 报价采集</span></div>
 <nav class="nav" aria-label="主导航"><button class="active" type="button">采集录入</button><a class="nav-item" href="/ue">UE 工作台</a></nav>
-<div class="top-right"><span class="demo-tag">原型 · 未接后端</span><span class="avatar" aria-hidden="true">BD</span></div></header>
+<div class="top-right"><span class="demo-tag">本地真机采集 · 未发布</span><span class="avatar" aria-hidden="true">BD</span></div></header>
 <main id="main" class="workspace">
   <div class="heading"><div><div class="eyebrow">BD 一线工具</div><h1>三平台比价采集</h1>
     <p class="subtitle">填写负责的城市、品牌与爆品，选择要比价的平台，开始采集后会实时显示每个平台的进度，失败可直接重跑。</p></div>
@@ -21,8 +21,8 @@
           </div>
           <fieldset class="platforms"><legend>选择采集平台（至少一个）</legend>
             <label class="platform-card"><input type="checkbox" name="platform" value="jd" checked><span class="p-name">京东</span><span class="p-desc">京东外卖 · 已就绪</span></label>
-            <label class="platform-card"><input type="checkbox" name="platform" value="meituan"><span class="p-name">美团</span><span class="p-desc">美团外卖 · 待接入</span></label>
-            <label class="platform-card"><input type="checkbox" name="platform" value="taobao"><span class="p-name">淘宝闪购</span><span class="p-desc">淘宝闪购 · 链路已通，待采集许可</span></label>
+            <label class="platform-card"><input type="checkbox" name="platform" value="meituan"><span class="p-name">美团</span><span class="p-desc">美团外卖 · 已就绪</span></label>
+            <label class="platform-card"><input type="checkbox" name="platform" value="taobao"><span class="p-name">淘宝闪购</span><span class="p-desc">淘宝闪购 · 已就绪</span></label>
           </fieldset>
           <div class="bd-actions"><button class="primary" type="submit" id="start-btn">开始采集</button><button type="button" id="reset-btn">清空</button><span class="muted smalltext" id="form-hint">选择 1–3 个平台</span></div>
         </form>
@@ -37,8 +37,14 @@
         <div class="platform-runs" id="platform-runs"></div>
         <div class="log-head"><span>实时日志</span><span class="muted smalltext" id="log-count">0 条</span></div>
         <pre class="run-log" id="run-log" aria-live="polite"></pre>
-        <div class="run-actions" id="run-actions" hidden><button class="primary" type="button" id="retry-btn">重跑失败平台</button><button type="button" id="new-btn">重新录入</button><a href="/ue"><button type="button">去 UE 工作台看结果</button></a></div>
+        <div class="run-actions" id="run-actions" hidden><button class="primary" type="button" id="retry-btn">重跑失败平台</button><button type="button" id="new-btn">重新录入</button></div>
       </div>
+    </section>
+
+    <section class="panel bd-result-panel" id="result-panel" hidden aria-labelledby="result-title">
+      <div class="panel-head"><div class="panel-title"><h2 id="result-title">比较结果与证据</h2><span class="panel-note" id="result-state"></span></div>
+        <div class="actions"><button type="button" class="small" id="refresh-result">刷新结果</button></div></div>
+      <div class="panel-body" id="result-body"></div>
     </section>
   </div>
 </main>

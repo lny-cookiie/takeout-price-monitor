@@ -25,7 +25,7 @@ export interface Mapping {
 }
 export interface Eligibility {
   accountRef: string; platformCustomer: Customer; storeCustomer: Customer; memberSegment: string;
-  memberProduct: string; memberTier: string; benefits: string[]; evidence: string; storeEvidence?: string;
+  memberProduct: string; memberTier: string; benefits: string[]; evidence: string; storeEvidence?: string; storeKey?: string;
 }
 export interface Profile {
   id: string; name: string; city: string; point: string;

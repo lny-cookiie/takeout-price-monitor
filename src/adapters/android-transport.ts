@@ -179,6 +179,7 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
     async back(){await beforeInput();await device.back();},
     async screenshot(signal) {
       // Standard Android screencap respects protected windows.
+      await beforeInput();
       const {stdout}=await run(adb(),[...args,'exec-out','screencap','-p'],{encoding:'buffer',timeout:8000,maxBuffer:20_000_000,windowsHide:true,signal});
       return stdout;
     },

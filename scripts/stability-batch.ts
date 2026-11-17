@@ -7,7 +7,7 @@ const rounds = Number(process.argv[2] ?? 10);
 const TS = new Date().toISOString().replace(/[-:TZ]/g, '').slice(0, 6);
 const OUT = `.runtime/batch-${TS}`;
 const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 19), ...a);
-const ADB = 'D:/vibecoding/takeout_price_competition/.runtime/adb-official-probe/platform-tools/adb.exe';
+const ADB = 'D:/vibecoding/03-TakeoutUE-外卖竞争监测/app/.runtime/adb-official-probe/platform-tools/adb.exe';
 
 function runOnce(): Promise<{code: number; seconds: number; out: string}> {
   return new Promise(resolve => {
@@ -43,11 +43,12 @@ for (let round = 1; round <= rounds; round++) {
 }
 
 // 汇总
-const summary: Record<string, {runs: number; ok: number; rate: string; avgSeconds: number}> = {};
+const summary: Record<string, {runs: number; ok: number | null; rate: string; avgSeconds: number}> = {};
 for (const name of ['meituan', 'taobao', 'jd']) {
   const hits = results.filter(r => r.platforms[name]).map(r => r.platforms[name]!);
-  const ok = hits.filter(h => h.code === 0).length;
-  summary[name] = {runs: hits.length, ok, rate: hits.length ? `${Math.round((ok / hits.length) * 100)}%` : 'n/a',
+  // 退出码不代表报价正确；在接入业务结果与人工复核前不报告成功率。
+  const ok = null;
+  summary[name] = {runs: hits.length, ok, rate: 'unverified',
     avgSeconds: hits.length ? Math.round(hits.reduce((s, h) => s + h.seconds, 0) / hits.length) : 0};
 }
 const totalAvg = Math.round(results.reduce((s, r) => s + r.seconds, 0) / results.length);

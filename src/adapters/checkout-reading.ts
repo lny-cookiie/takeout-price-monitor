@@ -211,3 +211,4 @@ export async function verifyCheckout(capture:Awaited<ReturnType<typeof captureCh
   return {evidence,total:capture.total,raw:capture.fields.payable!.raw,components,missing,eta,fieldResults,reconciled,basis,feesSeparate,couponCandidates,coupons:coupons.length?coupons:null,
     supplementaryEvidence:capture.proofs.slice(1)};
 }
+export type VerifiedCheckout = Awaited<ReturnType<typeof verifyCheckout>>;

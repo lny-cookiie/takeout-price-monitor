@@ -39,3 +39,25 @@
 .nav-item{display:flex;align-items:center;padding:0 15px;font-size:13px;color:#776f64;text-decoration:none;border-bottom:3px solid transparent}
 .nav-item:hover{color:var(--orange);text-decoration:none;background:#faf7f2}
 @media(max-width:900px){.nav-item{padding:0 13px}}
+/* 比较结果与证据 */
+.bd-result-panel .panel-body{padding:0 22px 22px}
+.result-banner{border-radius:7px;padding:11px 14px;font-size:13px;margin-bottom:14px;border:1px solid #ddd4c6;background:#fbfaf8}
+.result-banner.ok{border-color:#b7cdb8;background:#f2f8f2;color:#3f6b45}
+.result-banner.warn{border-color:#e3cfae;background:#fdf7ec;color:#8a6427}
+.result-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.result-card{border:1px solid var(--line);border-radius:8px;padding:14px 16px;background:#fff}
+.rc-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.rc-head strong{font-size:14px}
+.rc-tag{font-size:11px;border-radius:20px;padding:3px 9px;background:#f1ece4;color:#7a6f60}
+.rc-tag.ok{background:#e9f4ea;color:#3f6b45}.rc-tag.warn{background:#fdf2e0;color:#8a6427}.rc-tag.bad{background:#fbe9e7;color:#a5453a}
+.rc-amount{font-size:24px;font-weight:700;color:#3c332a;margin-bottom:10px}
+.rc-amount small{display:block;font-size:11px;font-weight:400;color:#9a8f80;margin-top:3px}
+.rc-meta{display:grid;gap:6px;margin:0;font-size:12px}
+.rc-meta div{display:grid;grid-template-columns:66px 1fr;gap:8px}
+.rc-meta dt{color:#9a8f80}.rc-meta dd{margin:0;color:#4a4036;word-break:break-all}
+.rc-meta a{color:#a06a3f}
+.rc-missing{margin-top:10px;font-size:12px;color:#6c6156}
+.rc-missing summary{cursor:pointer;color:#8a6427}
+.rc-missing ul{margin:8px 0 0;padding-left:18px}
+.rc-note{font-size:12px;color:#807568;margin:10px 0 0;line-height:1.7}
+@media(max-width:900px){.result-grid{grid-template-columns:1fr}}

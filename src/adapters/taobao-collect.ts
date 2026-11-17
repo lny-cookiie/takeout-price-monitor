@@ -1,59 +1,36 @@
-// 淘宝闪购单品采集链路。
-//
-// 架构定位（与京东/美团的关键差异，2026-11-12 实测定稿）：
-//   京东/美团：u2 读屏拿到节点 bounds → 精确点击 → guardMainPath 白名单断言。
-//   淘宝：Flutter 自绘 + H5 自绘，u2 实测读不到任何节点（原生页 0 节点、H5 页 1 节点 0 文字），
-//         因此整条链路只能用视觉定位，且**不能**用 guardMainPath 做偏航判定
-//         （读不到节点必然判 unknown 并 back，2026-11-09 深夜正是这样把跑通的链路改坏的）。
-//
-// 三条核心经验：
-//   1) 视觉定位必须配「页面结构硬约束」（y 区间），否则模型会被顶部广告位里的同名文字带偏。
-//   2) 同一页出现多个近似商品名（"板烧鸡腿堡" / "双层板烧鸡腿堡"）时，2B 视觉模型无法区分，
-//      该步骤必须用配置化的相对比例坐标（见 src/adapters/taobao-calibration.json）。
-//   3) 中文输入走 yadb（com.ysbing.yadb.Main + /data/local/tmp），不用 adb input text。
-import {createHash} from 'node:crypto';
+// 淘宝闪购采集：只操作有明确语义和证据的控件；节点不可用时停止。
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {readFileSync} from 'node:fs';
-import {writeFile} from 'node:fs/promises';
 import sharp from 'sharp';
 import type {ModelGateway} from '../infra/model.js';
+import {requireAndroidForeground} from './android-transport.js';
+import type {U2Node} from './meituan-semantic.js';
+import {AndroidUiTreeReader} from './android-uitree.js';
+import {flatten} from './android-page.js';
+import {cartIsExplicitlyEmpty,ownedCartRemoveControl} from './cart-safety.js';
+import {observedStore,observedItem,observedSingleBasket,payableEvidenceNodes} from './observed-identity.js';
+import {readMeituanSettlement} from './meituan-collect.js';
+import type {EvidenceStore} from '../infra/evidence.js';
+import type {Evidence} from '../domain/contracts.js';
+import {randomUUID} from 'node:crypto';
 
 const run = promisify(execFile);
 const log = (...a: unknown[]) => console.log(new Date().toISOString().slice(11, 19), '[taobao]', ...a);
 
-/** 标定值从配置读取，不硬编码在代码里（agent.md 5.4 节与第 6 节绝对坐标禁令的例外条款）。
- *  配置里记录了校准设备（型号/分辨率/density/App 版本）与重新校准的触发条件。 */
-const CALIBRATION_PATH = 'src/adapters/taobao-calibration.json';
-interface TaobaoCalibration {
-  schema: string;
-  device: {model: string; resolution: string; density: number; appVersion: string; calibratedAt: string};
-  ratios: {
-    shopSearchAddButton: {xRatio: number; yRatio: number; label: string; measuredPx: [number, number]};
-    detailQuantityMinus: {xRatio: number; yRatio: number; label: string; measuredPx: [number, number]};
-  };
-}
-function loadCalibration(): TaobaoCalibration {
-  // 用相对 session cwd 的路径读取；配置随代码进版本库，便于追溯标定时的设备信息
-  const raw = readFileSync(CALIBRATION_PATH, 'utf8');
-  const parsed = JSON.parse(raw) as TaobaoCalibration;
-  if (parsed.schema !== 'taobao-calibration/v1') throw new Error('taobao_calibration_schema_mismatch');
-  const {shopSearchAddButton, detailQuantityMinus} = parsed.ratios;
-  for (const [name, r] of Object.entries({shopSearchAddButton, detailQuantityMinus})) {
-    if (!(r.xRatio > 0 && r.xRatio < 1) || !(r.yRatio > 0 && r.yRatio < 1)) {
-      throw new Error(`taobao_calibration_invalid_ratio:${name}`);
-    }
-  }
-  return parsed;
-}
-
 export interface TaobaoStep {name: string; ok: boolean; detail?: string}
 export interface TaobaoQuote {
+  error?: string;
+  storeEvidence?: Evidence;
+  itemEvidence?: Evidence;
+  checkoutEvidence?: Evidence;
   /** 结算页截图的 sha256，作为该笔报价的页面证据（page_stage=checkout） */
   checkoutSha256?: string | null;
   /** 结算页截图落盘路径，便于人工复核 */
   checkoutImagePath?: string | null;
+  checkoutImage?: Buffer;
   store: string | null;
+  storeAddress?: string;
+  itemSpec?: string;
   item: string | null;
   originalFen: number | null;
   discountFen: number | null;
@@ -71,6 +48,10 @@ export interface TaobaoCollectOptions {
   serial: string;
   brand: string;
   itemName: string;
+  itemSpec: string;
+  city: string;
+  evidence: EvidenceStore;
+  onCleanup: (state:'untouched'|'restored'|'quarantined')=>void;
   /** 目标门店名关键字，例如「鞍山西道」；为空则取搜索结果第一家 */
   storeKeyword?: string;
   model: Pick<ModelGateway, 'locate' | 'json'>;
@@ -86,21 +67,48 @@ const sleep = (ms: number) => new Promise(ok => setTimeout(ok, ms));
 export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuote> {
   const {adbPath, serial, brand, itemName, model, yadbPath} = o;
   const signal = o.signal ?? AbortSignal.timeout(600_000);
+  let activeSignal=signal, cartMayHaveChanged=false;
   const steps: TaobaoStep[] = [];
-  // 读取标定配置（比例 + 校准设备信息）；配置非法时直接抛错，不带着错误坐标去点
-  const calibration = loadCalibration();
-  const addButton = calibration.ratios.shopSearchAddButton;
-  let W = 1260, H = 2844;
+  let W = 0, H = 0;
   const adb = async (args: string[]) =>
-    (await run(adbPath, ['-s', serial, ...args], {encoding: 'buffer', maxBuffer: 64 * 1024 * 1024})).stdout;
+    (await run(adbPath, ['-s', serial, ...args], {encoding: 'buffer', maxBuffer: 64 * 1024 * 1024,timeout:20_000,signal:activeSignal,windowsHide:true})).stdout;
+
+  const requireForeground = () => requireAndroidForeground(async()=>String(await adb(['shell','dumpsys','window'])), 'com.taobao.taobao', activeSignal);
+  let treeReader:AndroidUiTreeReader|undefined;
+  const readNodes = async ():Promise<U2Node[]> => {
+    await requireForeground();
+    treeReader ??= await AndroidUiTreeReader.create({serial,adbPath,devicePixelRatio:1,startTimeoutMs:5_000,requestTimeoutMs:5_000});
+    const tree=await treeReader.read();
+    const nodes=flatten(tree.root).filter(n=>n.attrs.package==='com.taobao.taobao').map(n=>({
+      text:String(n.attrs.text??''),desc:String(n.attrs['content-desc']??''),cls:String(n.type??''),rid:String(n.attrs['resource-id']??''),
+      left:n.bounds.left,top:n.bounds.top,width:n.bounds.width,height:n.bounds.height}));
+    if (!nodes.length) throw new Error('taobao_semantics_unavailable');
+    await requireForeground();
+    return nodes;
+  };
 
   const snap = async (tag: string): Promise<Buffer> => {
+    await requireForeground();
     const png = (await adb(['exec-out', 'screencap', '-p'])) as Buffer;
-    await writeFile(`.runtime/tb-${tag}.png`, png).catch(() => null);
     const m = await sharp(png).metadata();
-    W = m.width ?? W; H = m.height ?? H;
+    if (!m.width || !m.height) throw new Error('screen_geometry_unknown');
+    W = m.width; H = m.height;
     return png;
   };
+  const captureNodes=async(nodes:U2Node[],stage:string):Promise<Evidence>=>{
+    const png=await snap(stage), fresh=await readNodes();
+    if (nodes.some(n=>!fresh.some(v=>v.text===n.text && v.desc===n.desc && v.left===n.left && v.top===n.top && v.width===n.width && v.height===n.height)))
+      throw new Error('page_changed_during_capture');
+    const layers=[];
+    for(const n of nodes){
+      const left=Math.floor(n.left),top=Math.floor(n.top),width=Math.ceil(n.width),height=Math.ceil(n.height);
+      if(left<0 || top<0 || width<1 || height<1 || left+width>W || top+height>H) throw new Error('evidence_geometry_invalid');
+      layers.push({input:await sharp(png).extract({left,top,width,height}).png().toBuffer(),left,top});
+    }
+    const masked=await sharp({create:{width:W,height:H,channels:3,background:'#121719'}}).composite(layers).png().toBuffer();
+    return o.evidence.save(randomUUID(),stage,masked,'','live');
+  };
+  let storeEvidence:Evidence|undefined,itemEvidence:Evidence|undefined,actualStore:ReturnType<typeof observedStore>=null,actualItem:ReturnType<typeof observedItem>=null;
 
   const mark = (name: string, ok: boolean, detail?: string) => {
     steps.push({name, ok, detail});
@@ -108,7 +116,7 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     log(`${ok ? '✓' : '✗'} ${name}${detail ? ' — ' + detail : ''}`);
   };
 
-  /** 视觉定位点击；yMin/yMax 是页面结构硬约束，用于排除广告位等干扰 */
+  /** 恢复历史视觉定位和裁剪约束；前台检查与证据保存独立保留。 */
   const tapByVision = async (
     hint: string, tag: string,
     r: {xMin?: number; xMax?: number; yMin?: number; yMax?: number; cropTopRatio?: number; cropBottomRatio?: number} = {},
@@ -151,6 +159,7 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
 
   const typeChinese = async (text: string): Promise<boolean> => {
     try {
+      await requireForeground();
       // 先清空输入框：淘宝搜索框会保留上一次关键词，yadb 是追加注入而不是替换，
       // 不清理就会出现「想搜麦当劳、实际搜成清炖牛肉饭」。一次 adb 调用连发退格。
       const clears = Array.from({length: 30}, () => 'input keyevent KEYCODE_DEL').join(' && ');
@@ -164,9 +173,11 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     } catch { return false; }
   };
 
-  const escape = () => {
-    // 淘宝内链路可能停在任意页面，连续 back 回到淘宝主页面
-    for (let i = 0; i < 3; i++) adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => null);
+  const escape = async () => {
+    for (let i = 0; i < 3; i++) {
+      try { await requireForeground(); await adb(['shell','input','keyevent','KEYCODE_BACK']); }
+      catch { break; }
+    }
   };
 
   try {
@@ -174,12 +185,7 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 设备息屏时 screencap 会得到约 20KB 的全黑图，视觉定位必然错——这是实测踩过的坑。
     await adb(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']).catch(() => null);
     await sleep(900);
-    await adb(['shell', 'svc', 'power', 'stayon', 'true']).catch(() => null);
-    for (let i = 0; i < 3; i++) {
-      await adb(['shell', 'cmd', 'statusbar', 'collapse']).catch(() => null);
-      await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => null);
-      await sleep(600);
-    }
+    await adb(['shell', 'cmd', 'statusbar', 'collapse']).catch(() => null);
     await adb(['shell', 'input', 'keyevent', 'KEYCODE_HOME']).catch(() => null);
     await sleep(1400);
     mark('唤醒屏幕', true);
@@ -187,11 +193,6 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 视觉模型预热：对当前屏幕做一次真实视觉定位，把视觉编码器（mmproj）真正加载进显存。
     // 只发文本请求不会加载视觉编码器；实测模型服务空闲约 40 分钟后，首次 locate 会撞满
     // 60 秒超时，而同一张截图在本地单测只要 7 秒——冷的就是视觉通道，不是模型本体。
-    try {
-      const warmPng = await snap('warmup');
-      await model.locate('taobao_instant', warmPng, '屏幕上的任意可见文字', AbortSignal.timeout(150_000));
-      log('视觉模型预热完成');
-    } catch { log('视觉预热未完成，继续尝试正式流程'); }
 
     // 冷启动淘宝，保证从干净首页开始。
     // 等待时间不能太短：淘宝冷启动期间会占满 CPU，此时立刻调视觉模型会拖到 60 秒超时
@@ -200,14 +201,8 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 冷启动不要死等固定秒数：实测首页常在 8-10 秒就可用，死等 20 秒纯属浪费；
     // 但双 11 弹层期会更慢，所以改成「先等 8 秒，再用首页 tab 特征轮询确认就绪」。
     await sleep(8_000);
-    for (let i = 0; i < 3; i++) {
-      try {
-        const bootPng = await snap('boot-check');
-        const [bx, by] = await model.locate('taobao_instant', bootPng, '页面顶部 tab 栏里的“推荐”或“关注”文字', signal);
-        if (bx > 10 && by > 60 && by < 420) break;
-      } catch { /* 尚未就绪，继续等 */ }
-      await sleep(2_000);
-    }
+    await snap('boot-check');
+    await readNodes();
     mark('冷启动淘宝', true);
 
     // 1 首页 →「闪购外卖」tab
@@ -248,27 +243,10 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
       s4 = s3 && await tapByVision(storeHint, 'store-2',
         {yMin: Math.round(H * 0.25), yMax: Math.round(H * 0.64), cropTopRatio: 0.22, cropBottomRatio: 0.66}, 2);
     }
-    // 进店后校验门店名：搜索结果里混有 Kpro 等近似招牌，点错会整条链路白跑（实测浪费一分钟）。
     if (s4) {
-      try {
-        const shopPng = await snap('store-verify');
-        const r = await model.json<{value: string}>('taobao_instant', 'taobao_store_check',
-          '读出当前页面顶部的门店全名，只输出门店名，读不到输出空字符串。',
-          {}, (v: unknown) => v as {value: string}, {image: shopPng, signal,
-            schema: {type: 'object', properties: {value: {type: 'string'}}, required: ['value'], additionalProperties: false}});
-        const shopName = String((r as {value?: string})?.value ?? '').trim();
-        if (shopName && !shopName.includes(brand)) {
-          log(`  [store] 进错店「${shopName}」，返回重选`);
-          await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => null);
-          await sleep(1_500);
-          s4 = await tapByVision(storeHint, 'store-retry',
-            {xMin: Math.round(W * 0.22), xMax: Math.round(W * 0.92),
-             yMin: Math.round(H * 0.27), yMax: Math.round(H * 0.56),
-             cropTopRatio: 0.26, cropBottomRatio: 0.58});
-        } else if (shopName) {
-          log(`  [store] 门店确认：${shopName}`);
-        }
-      } catch { /* 校验异常不阻断主链路 */ }
+      actualStore=observedStore(await readNodes(),brand,o.city);
+      if (!actualStore) throw new Error('taobao_store_unverified');
+      storeEvidence=await captureNodes(actualStore.nodes,'store');
     }
     mark('进入目标门店', !!s4);
 
@@ -291,6 +269,13 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 导致标定坐标点空（2026-11-12 复现：加了 swipe 后停在结果页，去掉后正常进入单品详情页）。
     let s7 = false;
     if (s6) {
+      const nodes=await readNodes();
+      if (!cartIsExplicitlyEmpty(nodes)) throw new Error('cart_preflight_unverified');
+      actualItem=observedItem(nodes,itemName,o.itemSpec);
+      if (!actualItem) throw new Error('taobao_item_unverified');
+      itemEvidence=await captureNodes(actualItem.nodes,'item');
+      cartMayHaveChanged=true;
+      o.onCleanup('quarantined');
       await sleep(3000);
       // 不再用「标定相对坐标」点商品：店内搜索结果前三行分别是
       //   ①双层板烧鸡腿堡三件套(¥61起，右侧“选套餐”) ②板烧鸡腿堡套餐(¥42起，右侧“选套餐”) ③板烧鸡腿堡(¥26.5，右侧“− 1 +”)
@@ -317,77 +302,69 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     //    点中 → 直接加购（详情页显示 − N + 数量控件，无「加入购物车」按钮）
     //    点偏 → 只进详情页（仍有「加入购物车」按钮，购物车仍 ¥0）
     //    所以这里无条件尝试点一次「加入购物车」；已经加购时按钮不存在，定位失败即可，不重试。
-    const s8 = s7 && await tapByVision('页面右下角深红色矩形“加入购物车”按钮', 'addcart',
-      {yMin: Math.round(H * 0.40), yMax: Math.round(H * 0.68), cropTopRatio: 0.36, cropBottomRatio: 0.72}, 1);
-    mark('加购结算', !!s8 || s7);
+    let s8=false;
+    if (s7) {
+      const afterItem=await readNodes();
+      if (cartIsExplicitlyEmpty(afterItem)) {
+        s8=await tapByVision('页面右下角深红色矩形“加入购物车”按钮', 'addcart',
+          {yMin: Math.round(H * 0.40), yMax: Math.round(H * 0.68), cropTopRatio: 0.36, cropBottomRatio: 0.72}, 1);
+      } else if (observedSingleBasket(afterItem,itemName,o.itemSpec) || ownedCartRemoveControl(afterItem,itemName,o.itemSpec)) s8=true;
+      else throw new Error('taobao_cart_state_unverified');
+    }
+    mark('加购结算', s8);
     await sleep(2200);
 
     // 9 去结算
-    const s9 = s7 && await tapByVision('页面底部购物车栏最右侧那个红色“去结算”按钮', 'checkout', {yMin: Math.round(H * 0.85), yMax: H - 10, cropTopRatio: 0.80, cropBottomRatio: 1});
+    const s9 = s8 && await tapByVision('页面底部购物车栏最右侧那个红色“去结算”按钮', 'checkout', {yMin: Math.round(H * 0.85), yMax: H - 10, cropTopRatio: 0.80, cropBottomRatio: 1});
     mark('去结算', !!s9);
     await sleep(5000);
 
     if (!s9) return {store: null, item: null, originalFen: null, discountFen: null, packagingFen: null, deliveryFen: null, redPacketFen: null, totalFen: null, steps, rawText: null};
 
-    // 10 读结算页字段：先截大图存档，再让模型逐项读金额（复杂嵌套 schema 2B 模型容易输出不合法）
-    const png = await snap('checkout-final');
-    const checkoutSha256 = createHash('sha256').update(png).digest('hex');
-    const checkoutImagePath = '.runtime/tb-checkout-final.png';
-    const img = await sharp(png).resize(Math.round(W * 0.62)).jpeg({quality: 85}).toBuffer();
-    const ask = async (task: string): Promise<string | null> => {
-      try {
-        const r = await model.json<{value: string}>('taobao_instant', 'taobao_checkout_field',
-          '读取这张淘宝结算页截图里的指定金额，只输出图中明确显示的数字（含¥符号），读不到就输出空字符串。只依据可见内容，不猜。',
-          {task}, v => v as {value: string}, {image: img, signal,
-            schema: {type: 'object', properties: {value: {type: 'string'}}, required: ['value'], additionalProperties: false}});
-        return (r as {value?: string})?.value?.trim() || null;
-      } catch { return null; }
-    };
-    const total = await ask('最下方“立即支付”按钮上显示的最终应付金额');
-    const packaging = await ask('“打包费”这一行右侧的金额');
-    const delivery = await ask('“配送费”这一行右侧的金额');
-    const redPacket = await ask('“闪购红包”这一整行最右侧那个金额（通常带减号，形如 -¥6 或 -6）；只输出这一行的金额，不要输出底部的合计/总计金额');
-    const original = await ask('商品行“板烧鸡腿堡”右侧的原价金额');
-    const discounted = await ask('商品行“板烧鸡腿堡”下方红色的“优惠后”金额');
-
-    const storeTxt = await (async () => {
-      try {
-        const r = await model.json<{value: string}>('taobao_instant', 'taobao_store_name',
-          '读出结算页顶部商品分组右侧的门店全名（形如「麦当劳&麦咖啡(天津鞍山西店)」），只输出门店名。',
-          {}, v => v as {value: string}, {image: img, signal,
-            schema: {type: 'object', properties: {value: {type: 'string'}}, required: ['value'], additionalProperties: false}});
-        return (r as {value?: string})?.value?.trim() || null;
-      } catch { return null; }
-    })();
-
-    const fen = (s: string | null): number | null => {
-      if (!s) return null;
-      const m = /-?\d+(?:\.\d+)?/.exec(s.replace(/,/g, ''));
-      if (!m) return null;
-      const n = Number(m[0]);
-      return Number.isFinite(n) ? Math.round(n * 100) : null;
-    };
-
-    mark('采数完成', total != null, `合计=${total}`);
-
-    return {
-      checkoutSha256,
-      checkoutImagePath,
-      store: storeTxt,
-      item: itemName,
-      originalFen: fen(original),
-      discountFen: fen(discounted),
-      packagingFen: fen(packaging),
-      deliveryFen: fen(delivery),
-      redPacketFen: fen(redPacket),
-      totalFen: fen(total),
-      steps,
-      rawText: JSON.stringify({total, packaging, delivery, redPacket, original, discounted, store: storeTxt}),
-    };
+    // 结算页必须重新核对商品与数量，并从明确标注的应付节点取证。
+    const checkoutNodes=await readNodes();
+    if (!observedSingleBasket(checkoutNodes,itemName,o.itemSpec)) throw new Error('taobao_checkout_item_unverified');
+    const parsed=readMeituanSettlement(checkoutNodes);
+    const payableNodes=payableEvidenceNodes(checkoutNodes,parsed.raw);
+    if (!payableNodes || parsed.payable_fen==null) throw new Error('taobao_payable_unverified');
+    const checkoutEvidence=await captureNodes(payableNodes,'checkout');
+    const checkoutImage=await o.evidence.read(checkoutEvidence.id,'png');
+    const verification=await model.json<{value:string}>('taobao_instant','taobao_checkout_verify',
+      '读取实付或合计标签旁的金额，只输出金额；没有看到则输出空字符串。',{},v=>v as {value:string},
+      {image:checkoutImage,signal,schema:{type:'object',properties:{value:{type:'string'}},required:['value'],additionalProperties:false}});
+    const match=/^\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?)\s*$/.exec(verification.value ?? '');
+    if (!match || Math.round(Number(match[1])*100)!==parsed.payable_fen) throw new Error('taobao_payable_mismatch');
+    if (!actualStore || !actualItem || !storeEvidence || !itemEvidence) throw new Error('taobao_identity_unverified');
+    mark('采数完成',true);
+    return {checkoutSha256:checkoutEvidence.sha256,checkoutEvidence,storeEvidence,itemEvidence,
+      store:actualStore.name,storeAddress:actualStore.address,item:actualItem.name,itemSpec:actualItem.spec,
+      originalFen:null,discountFen:null,packagingFen:null,deliveryFen:null,redPacketFen:null,
+      totalFen:parsed.payable_fen,steps,rawText:JSON.stringify({payable:parsed.raw})};
   } catch (e) {
     log('采集异常:', (e as Error).message);
-    return {store: null, item: null, originalFen: null, discountFen: null, packagingFen: null, deliveryFen: null, redPacketFen: null, totalFen: null, steps, rawText: null};
+    return {error:(e as Error).message,store: null, item: null, originalFen: null, discountFen: null, packagingFen: null, deliveryFen: null, redPacketFen: null, totalFen: null, steps, rawText: null};
   } finally {
-    escape();
+    if (cartMayHaveChanged) {
+      activeSignal=AbortSignal.timeout(45_000);
+      try {
+        let nodes=await readNodes();
+        let remove=ownedCartRemoveControl(nodes,itemName,o.itemSpec);
+        if (!cartIsExplicitlyEmpty(nodes) && !remove) {
+          await requireForeground();
+          await adb(['shell','input','keyevent','KEYCODE_BACK']);
+          await sleep(800);
+          nodes=await readNodes();
+          remove=ownedCartRemoveControl(nodes,itemName,o.itemSpec);
+        }
+        if (remove) {
+          await requireForeground();
+          await adb(['shell','input','tap',String(Math.round(remove.left+remove.width/2)),String(Math.round(remove.top+remove.height/2))]);
+          await sleep(800);
+          nodes=await readNodes();
+        }
+        if (cartIsExplicitlyEmpty(nodes)) { cartMayHaveChanged=false; o.onCleanup('restored'); }
+      } catch { /* 未确认恢复时保留隔离状态 */ }
+    }
+    if (!cartMayHaveChanged) await escape();
   }
 }

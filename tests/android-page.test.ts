@@ -178,7 +178,7 @@ test('waitFor treats a foreign first tree as a transition',async()=>{
   assert.ok(nodes.some(n=>n.attrs['resource-id']==='home'));
 });
 
-test('waitFor retries a startup read once and preserves failures outside startup',async()=>{
+test('页面读取恢复瞬时失败，持续失败在有限重试后停止',async()=>{
   const home=node('外卖',{left:0,top:0,width:120,height:40},'home');
   const png=await image();
   let calls=0;
@@ -190,8 +190,12 @@ test('waitFor retries a startup read once and preserves failures outside startup
   assert.ok(nodes.some(n=>n.attrs['resource-id']==='home'));
   assert.equal(calls,2);
   calls=0;
-  await assert.rejects(screen.waitFor(['home']),{code:'screen_unreadable'});
-  assert.equal(calls,1);
+  await screen.waitFor(['home']);
+  assert.equal(calls,2);
+  let failures=0;
+  const broken=new ReviewedScreen(device(async()=>{failures++;throw new Error('Android hierarchy unavailable');},png),source,{},AbortSignal.timeout(8_000));
+  await assert.rejects(broken.waitFor(['home']),{code:'screen_unreadable'});
+  assert.equal(failures,3);
 });
 
 test('pilot store header follows the live card anchor without allowing another row',()=>{

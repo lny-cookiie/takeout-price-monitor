@@ -22,7 +22,7 @@ import { createApplication } from '../src/http/app.js';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const supply:Supply={store:{key:'0005',name:'测试咖啡店',brand:'测试品牌',city:'测试市',address:'测试路1号'},item:{key:'007',name:'拿铁',kind:'single',spec:'500ml',options:[],parts:null}};
-const eligibility:Eligibility={accountRef:'reviewed-account',platformCustomer:'existing',storeCustomer:'existing',memberSegment:'非会员',memberProduct:'',memberTier:'',benefits:[],evidence:'资格核对记录',storeEvidence:'本店的资格记录'};
+const eligibility:Eligibility={accountRef:'reviewed-account',platformCustomer:'existing',storeCustomer:'existing',memberSegment:'非会员',memberProduct:'',memberTier:'',benefits:[],evidence:'资格核对记录',storeEvidence:'本店的资格记录',storeKey:'0005'};
 const target:Target={id:'item-1',revision:digest(supply),supply,reference:'样例'};
 const same={relation:'exact' as const,reason:'证据支持地址和规格一致',missing:[]};
 function task(platform:Platform,source?:AndroidSource):Task {
@@ -86,6 +86,21 @@ test('真机任务中断后，排队中的同设备任务被标记为暂停，�
     assert.equal(restarted.claim('meituan',now,'live'),null);
     assert.ok(restarted.claim('taobao_instant',now,'live'));
   } finally {restarted.close();}
+});
+test('购物车需要人工确认时暂停同设备队列',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'takeout-cart-quarantine-'));
+  const store=new SqliteStore(join(dir,'test.sqlite'));
+  try {
+    const now=new Date().toISOString();
+    store.createRun({id:'run',scenario:'competition',created_at:now,label:'测试',schedule_key:null},[task('jd'),task('meituan')]);
+    const claim=store.claim('jd',now,'live');assert.ok(claim);
+    store.finish(claim,{status:'failed',error_code:'cleanup_failed',availability:'unknown',observation:null,trace:[],evidence:null,started_at:now,finished_at:now,cleanup:'needs_attention',cost:{model_yuan:null,execution_ms:0}},null);
+    assert.equal(store.snapshot('run').slots.find(s=>s.task.platform==='meituan')?.state,'source_blocked');
+    assert.throws(()=>store.confirmCartEmpty('slot-meituan'),/cart_confirmation_not_allowed/);
+    store.confirmCartEmpty('slot-jd');
+    assert.ok(store.snapshot('run').events.some(e=>e.code==='cart_empty_confirmed_by_user'));
+    assert.throws(()=>store.confirmCartEmpty('slot-jd'),/cart_confirmation_not_allowed/);
+  } finally {store.close();}
 });
 test('同品牌不同店、同地址不同品牌、容量及套餐组成差异均不能确认',()=>{
   const different=(mutate:(s:Supply)=>void)=>{const copy=structuredClone(supply);mutate(copy);return copy;};
@@ -209,15 +224,17 @@ test('京东一键采集经 HTTP 扫描、排除套餐、双读金额并恢复�
   const submit=(body:unknown)=>api('/api/market/jd-runs',json('POST',body));
   async function finish(id:string) {
     const until=Date.now()+18_000;
+    let lastReport: unknown;
     do {
       const report=await (await api('/api/market/runs/'+id)).json() as import('../src/ui/jd-runs.js').CollectionRun;
+      lastReport=report;
       if (report.state==='completed') return report;
       await delay(100);
     } while (Date.now()<until);
-    assert.fail('采集回放未结束');
+    assert.fail('采集回放未结束：'+JSON.stringify(lastReport));
   }
   try {
-    const {storeEvidence:_storeEvidence,...profileEligibility}=eligibility;
+    const {storeEvidence:_storeEvidence,storeKey:_storeKey,...profileEligibility}=eligibility;
     const profileResponse=await api('/api/market/profiles',json('PUT',{id:'reviewed',name:'测试配送与账号',city,point:source.point,eligibility:{jd:profileEligibility}}));
     assert.equal(profileResponse.status,200,await profileResponse.text());
     const saved=await api('/api/market/jd-stores',json('POST',{city,district,brand,storeName}));
@@ -231,9 +248,9 @@ test('京东一键采集经 HTTP 扫描、排除套餐、双读金额并恢复�
     assert.equal((await submit({...input,profileId:'other-profile'})).status,409);
     const first=await finish(input.requestId);
     assert.equal(first.shelf?.coverage,'complete',JSON.stringify(first.slots[0]));
-    assert.equal(first.shelf?.scannedCount,2);
+    assert.equal(first.shelf?.scannedCount,2,'货架扫描数');
     assert.equal(first.shelf?.selected[0]?.rawName,item);
-    assert.equal(first.slots.length,2);
+    assert.equal(first.slots.length,2,'运行任务数');
     assert.equal(first.slots[1]?.menuPrices[0]?.fen,2000);
     assert.equal(first.slots[1]?.observation?.amount_fen,2150,JSON.stringify(first.slots[1]));
     assert.equal(first.slots[1]?.context?.address,address);
@@ -243,7 +260,7 @@ test('京东一键采集经 HTTP 扫描、排除套餐、双读金额并恢复�
     assert.equal(savedWorkspace.jdStores[0]?.verified?.store.address,address);
     assert.ok(first.slots[1]?.attempts[0]?.steps.some(s=>s.phase==='restore' && s.state==='succeeded'));
     assert.equal(actions.filter(a=>a==='remove').length,1);
-    assert.equal(actions.filter(a=>a==='launch').length,2);
+    assert.equal(actions.filter(a=>a==='launch').length,2,'启动次数：'+actions.join(','));
     assert.equal((await api(first.slots[1]!.proof!.screenshot)).status,200);
     assert.equal(app.store.db.prepare('SELECT count(*) n FROM market_orders').get()?.n,0);
     assert.equal((await api('/api/market/records?runId='+input.requestId)).status,200);
@@ -469,6 +486,21 @@ test('Android 页面回放检查起价、真实零包装费、未知配送费、
   };
   const jd=live('jd',2150), mt=live('meituan',1900), tb=live('taobao_instant',2000);
   assert.equal(comparePair(jd,mt).deltaFen,250);
+  const otherBranch=live('meituan',1900);
+  otherBranch.result!.resolvedLive=structuredClone(otherBranch.task.live!);
+  otherBranch.result!.resolvedLive!.mapping!.candidate.supply=structuredClone(supply);
+  otherBranch.result!.resolvedLive!.mapping!.candidate.supply.store.name='测试品牌（另一分店）';
+  otherBranch.result!.resolvedLive!.mapping!.candidate.supply.store.address='测试路2号';
+  otherBranch.result!.resolvedLive!.mapping!.candidate.supply.store.key='branch-2';
+  jd.task.live!.profile.eligibility.jd!.storeKey=supply.store.key;
+  otherBranch.result!.resolvedLive!.profile.eligibility.meituan!.storeKey='branch-2';
+  assert.equal(comparePair(jd,otherBranch).deltaFen,250);
+  assert.equal(comparisonRows([jd,otherBranch])[0]!.cells.meituan.actualStore?.name,'测试品牌（另一分店）');
+  otherBranch.result!.resolvedLive!.mapping!.candidate.supply.item.spec='700ml';
+  assert.equal(comparePair(jd,otherBranch).deltaFen,null);
+  const oldCompetitor=live('meituan',1900);
+  oldCompetitor.result!.observation!.collector_version='meituan-0.1.0';
+  assert.equal(comparePair(jd,oldCompetitor).deltaFen,null);
   assert.equal(comparisonRows([jd,mt,tb])[0]!.lowestFen,1900);
   assert.equal(comparisonRows([jd,mt])[0]!.lowestFen,null);
   const disputed={...tb,review:{observationId:tb.result!.observation!.observation_id,decision:'disputed' as const,note:'证据金额不符',minutes:1,reviewedAt:new Date().toISOString()}};

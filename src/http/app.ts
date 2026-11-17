@@ -129,7 +129,7 @@ export async function createApplication(options: { root?: string; dataDir?: stri
     if (platform === 'taobao_instant') {
       const tb = sources.get('taobao_instant');
       return liveTaobaoCollector({
-        sources, model,
+        sources, model, evidence,
         adbPath: process.env.MIDSCENE_ADB_PATH ?? '',
         serial: tb?.device ?? '',
         yadbPath: join(process.cwd(), 'node_modules/@midscene/android/bin/yadb'),
@@ -168,16 +168,13 @@ export async function createApplication(options: { root?: string; dataDir?: stri
     meituan: 'com.sankuai.meituan',
     taobao_instant: 'com.taobao.taobao',
   };
-  const resetOtherApps = async (currentPlatform: string): Promise<void> => {
+  const resetOtherApps = async (currentPlatform: string, serial: string): Promise<void> => {
     const adbPath = process.env.MIDSCENE_ADB_PATH;
     if (!adbPath) return;
     try {
       const {execFile} = await import('node:child_process');
       const {promisify} = await import('node:util');
       const run = promisify(execFile);
-      const {stdout} = await run(adbPath, ['devices'], {timeout: 10_000, encoding: 'utf8'});
-      const serial = String(stdout).split('\n').slice(1)
-        .map(l => l.trim().split(/\s+/)).find(parts => parts[1] === 'device')?.[0];
       if (!serial) return;
       for (const [key, pkg] of Object.entries(APP_PACKAGE)) {
         if (key === currentPlatform) continue;
@@ -193,10 +190,11 @@ export async function createApplication(options: { root?: string; dataDir?: stri
     close: () => c.close(),
     collect: (task, attemptId, signal, attemptNumber, emit) =>
       withDeviceLock(c.platform, async () => {
+        signal.throwIfAborted();
         // 临时开关：RESET_OTHER_APPS=0 可禁用平台切换清理，用于定位京东回归失败是否由它引入
-        if (process.env.RESET_OTHER_APPS !== '0') await resetOtherApps(c.platform);
+        if (process.env.RESET_OTHER_APPS !== '0') await resetOtherApps(c.platform,task.device_ref);
         return c.collect(task, attemptId, signal, attemptNumber, emit);
-      }),
+      },signal),
   });
   const lockedLive = android.map(wrapDeviceLock);
   const lockedMeituan = wrapDeviceLock(meituanCollector(baseUrl,browser,evidence));

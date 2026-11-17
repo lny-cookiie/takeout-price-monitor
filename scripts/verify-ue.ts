@@ -210,7 +210,7 @@ try{
     assert.match(await page.locator('main').innerText(),/统计范围/);
     await page.screenshot({path:join(dir,'11-dictionary.png'),fullPage:true});
     await page.locator('[data-action="data-tab"][data-id="catalogue"]').click();
-    const old=await context.newPage();await old.goto(app.baseUrl);await old.locator('a[href="/ue"]').waitFor();await old.close();
+    const old=await context.newPage();await old.goto(app.baseUrl);await old.locator('a.nav-item[href="/ue"]').waitFor();await old.close();
     assert.deepEqual(errors,[]);
   });
 }finally{

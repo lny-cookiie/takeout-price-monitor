@@ -47,6 +47,41 @@ test('预览不入库；重复导入及请求幂等；修订保留原任务并�
 });
 const node=(text:string,x:number,y:number):UiNode=>({type:'text',attrs:{text},bounds:{left:x,top:y,width:70,height:20},children:[]});
 const evidence:Evidence={id:randomUUID(),screenshot:'/test.png',sha256:'a'.repeat(64),captured_at:new Date().toISOString(),page_stage:'checkout',data_mode:'live'} as Evidence;
+test('一次指定采集将所选平台放在同一比较组',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'comparison-group-'));
+  const legacy=new SqliteStore(join(dir,'test.sqlite'));
+  try {
+    const market=new CompetitionStore(legacy,await AndroidSources.load(join(dir,'absent.json')));
+    const targetId=market.importCatalog(input).entries[0]!.id;
+    market.saveProfile({id:'test',name:'测试',city:'天津市',point:'测试点位',eligibility:{}});
+    const requestId=randomUUID();
+    market.startSpecifiedRun({requestId,targetId,profileId:'test',platforms:['jd','meituan','taobao_instant']});
+    const slots=legacy.snapshot(requestId).slots;
+    assert.equal(slots.length,3);
+    assert.deepEqual(new Set(slots.map(s=>s.task.platform)),new Set(['jd','meituan','taobao_instant']));
+    assert.ok(slots.every(s=>s.task.run_id===requestId && s.task.comparison_group_id===requestId));
+    assert.ok(slots.every(s=>Date.parse(s.task.deadline_at)-Date.parse(s.task.due_at)===900_000));
+    const claimed=legacy.claim('jd',new Date().toISOString(),'live');
+    assert.ok(claimed);
+    const at=new Date().toISOString();
+    legacy.finish(claimed,{status:'failed',error_code:'network_error',availability:'unknown',observation:null,trace:[],evidence:null,started_at:at,finished_at:at,cleanup:'untouched',cost:{model_yuan:null,execution_ms:0}},null);
+    // 模拟来源已获准，验证重试保留原组及历史尝试。
+    (market as any).sources.permitted=()=>true;
+    market.retryGroupPlatform(requestId,'jd');
+    const retried=legacy.snapshot(requestId);
+    assert.equal(retried.slots.find(s=>s.task.platform==='jd')?.state,'queued');
+    assert.equal(retried.attempts.length,1);
+    assert.equal(retried.slots.find(s=>s.task.platform==='jd')?.task.comparison_group_id,requestId);
+    const second=legacy.claim('jd',new Date().toISOString(),'live');assert.ok(second);
+    const finished=new Date().toISOString();
+    legacy.finish(second,{status:'failed',error_code:'cleanup_failed',availability:'unknown',observation:null,trace:[],evidence:null,started_at:finished,finished_at:finished,cleanup:'needs_attention',cost:{model_yuan:null,execution_ms:0}},null);
+    assert.throws(()=>market.retryGroupPlatform(requestId,'jd'),/隔离/);
+    legacy.confirmCartEmpty(second.task.slot_id);
+    market.retryGroupPlatform(requestId,'jd');
+    assert.equal(legacy.snapshot(requestId).attempts.length,2);
+    assert.equal(legacy.snapshot(requestId).slots.find(s=>s.task.platform==='jd')?.state,'queued');
+  } finally { legacy.close(); }
+});
 test('费用只读取明确行；免费与未知分开；双金额不可直接当作实收',()=>{
   const a=semanticFees([node('配送费',10,20),node('免费',100,20),node('包装费',10,60),node('¥1.00',100,60)]);
   assert.equal(moneyFen(a.readings.delivery?.raw),0);assert.equal(moneyFen(a.readings.packaging?.raw),100);

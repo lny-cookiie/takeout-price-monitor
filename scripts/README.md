@@ -28,6 +28,7 @@
 | `verify.ts` | 端到端验证（`npm run test:e2e`），使用独立临时数据库 |
 | `verify-collection.ts` | 指定单品采集工作台浏览器验证 |
 | `verify-ue.ts` | UE 工作台浏览器验证（`npm run test:ue:browser`） |
+| `bd-stability.ts` | 从正式 `/api/bd/runs` 发起连续批次；输入格式见 `bd-batch.example.json`，用法 `npx tsx scripts/bd-stability.ts <输入文件> 20`。逐平台保留失败、跳过及证据摘要，隔离或未终止时停止；正确率仍须人工核对。 |
 | `run-acceptance.ts` | 京东单店验收编排：前置检查 → 20 次批次 → 汇总报告 → 冻结基线 → 证据索引；默认 dry-run 只做前置检查，加 `--run` 才启动真机采集 |
 | `serve-ue.ts` | UE 静态预览服务（`npm run dev:ue`），不连采集后台 |
 | `showcase.ts` | 历史模拟演示（`npm run demo`） |
@@ -42,3 +43,4 @@ python scripts/diagrams/draw_ue_flowcharts.py
 ```
 
 审稿裁剪图、SVG/PDF/DOT 导出与 imagegen 参考图归档在 `前期调研/图表/_archive/`，不再维护。
+| `bd-acceptance.ts` | v2 验收批次：从正式 `/api/bd/runs` 逐组提交三平台比较组，保留失败与重试，核对证据哈希，统计完整组率与 P50/P90；用法 `npx tsx scripts/bd-acceptance.ts --label=A --groups=20 --input=scripts/bd-batch.example.json`。 |

@@ -14,7 +14,7 @@ function killTree(pid: number | undefined) {
   try { execSync(`taskkill /PID ${pid} /T /F`, {stdio: 'ignore'}); } catch {}
   try { process.kill(pid, 'SIGKILL'); } catch {}
 }
-const ADB = 'D:/vibecoding/takeout_price_competition/.runtime/adb-official-probe/platform-tools/adb.exe';
+const ADB = 'D:/vibecoding/03-TakeoutUE-外卖竞争监测/app/.runtime/adb-official-probe/platform-tools/adb.exe';
 
 /** 依次执行一个命令，超时强杀，返回 exit code 与耗时；stdout/stderr 落盘便于事后核对业务结果。 */
 function runStep(name: string, cmd: string, args: string[], timeoutMs: number, logPath: string): Promise<{name: string; code: number; seconds: number; stalled: boolean}> {
@@ -93,18 +93,7 @@ async function waitService(url: string, timeoutMs = 30_000): Promise<boolean> {
 }
 
 await mkdir(OUT, {recursive: true});
-// 每轮开始前清暂停记录与历史 attempt：否则京东会直接返回 scope_paused_after_page_not_ready（11 秒假失败）。
-try {
-  const {DatabaseSync} = await import('node:sqlite');
-  const db = new DatabaseSync('.runtime/observatory.sqlite');
-  db.exec('PRAGMA foreign_keys=OFF');
-  for (const t of ['attempt_steps','slots','attempts','paused_resources']) {
-    try { db.prepare('DELETE FROM '+t).run(); } catch {}
-  }
-  db.exec('PRAGMA foreign_keys=ON');
-  db.close();
-  log('已清理暂停记录与历史 attempt');
-} catch (error) { log('清理失败（不阻塞）', (error as Error).message.slice(0,80)); }
+// 历史记录和暂停状态必须保留；验收不得清空真实数据库。
 const results: Array<{name: string; code: number; seconds: number; business?: string}> = [];
 
 // 0 读屏基线：美团语义层依赖 u2 的 9008 端口，串行前必须先拉起 u2 + 端口转发并验证可达。

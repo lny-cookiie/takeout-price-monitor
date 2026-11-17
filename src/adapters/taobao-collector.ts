@@ -12,9 +12,13 @@ import type {AndroidSources} from './android-source.js';
 import type {ModelGateway} from '../infra/model.js';
 import {collectTaobao} from './taobao-collect.js';
 import {reportProgress} from './live-progress.js';
+import type {EvidenceStore} from '../infra/evidence.js';
+import {digest,normalize} from '../domain/competition.js';
+import {installedAppVersion} from './android-transport.js';
 
 export interface TaobaoCollectorOptions {
   sources: AndroidSources;
+  evidence: EvidenceStore;
   model: Pick<ModelGateway, 'status' | 'locate' | 'json'>;
   /** adb 可执行文件，通常取 MIDSCENE_ADB_PATH */
   adbPath: string;
@@ -22,6 +26,9 @@ export interface TaobaoCollectorOptions {
   serial: string;
   /** Midscene 自带的 yadb 二进制路径，用于中文输入 */
   yadbPath: string;
+  collect?: typeof collectTaobao;
+  appVersion?: typeof installedAppVersion;
+  progress?: typeof reportProgress;
 }
 
 /** 采集链路节点 → 前端进度条节点名的映射，供 /ue 与 /bd 的进度条显示 */
@@ -46,7 +53,8 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
     mode: 'live',
     async close() {},
 
-    async collect(task: Task, attemptId: string, signal: AbortSignal): Promise<AttemptResult> {
+    async collect(task: Task, attemptId: string, signal: AbortSignal, _attemptNumber, emit): Promise<AttemptResult> {
+      const progress=opts.progress ?? reportProgress;
       const started = Date.now();
       const started_at = new Date(started).toISOString();
       const trace: AttemptResult['trace'] = [];
@@ -73,6 +81,13 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
           cleanup: 'untouched', cost: {model_yuan: null, execution_ms: 0},
         };
       }
+      const actualVersion=await (opts.appVersion ?? installedAppVersion)(source.device,source.package,signal).catch(()=>null);
+      if (!actualVersion || source.appVersion==='unknown' || actualVersion!==source.appVersion) {
+        const at=new Date().toISOString();
+        return {status:'blocked',error_code:'app_version_changed',availability:'unknown',observation:null,
+          trace:[{phase:'source_check',at,note:'应用版本未登记或与设备不一致'}],evidence:null,started_at:at,finished_at:at,
+          cleanup:'untouched',cost:{model_yuan:null,execution_ms:0}};
+      }
 
       const live = task.live!;
       const brand = live.target.supply.store.brand;
@@ -87,21 +102,30 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
       let availability = 'unknown';
       let observation: Observation | null = null;
       let evidence: Evidence | null = null;
+      let cleanup: AttemptResult['cleanup'] = 'untouched';
+      let verifiedLive:AttemptResult['resolvedLive'];
 
       try {
-        reportProgress({platform: 'taobao_instant', node: '进入首页', state: 'running'});
-        quote = await collectTaobao({
+        emit?.({phase:'navigation',state:'started'});
+        void progress({platform: 'taobao_instant', node: '进入首页', state: 'running'});
+        quote = await (opts.collect ?? collectTaobao)({
           adbPath: opts.adbPath,
           serial: opts.serial,
           brand,
           itemName,
+          itemSpec:live.target.supply.item.spec ?? '',
+          city:live.target.supply.store.city,
+          evidence:opts.evidence,
+          onCleanup:state=>{ cleanup=state; },
           storeKeyword,
           model: opts.model,
           yadbPath: opts.yadbPath,
           signal,
           onStep: name => {
+            emit?.({phase:'navigation',state:'succeeded',data:{step:name}});
+            emit?.({phase:'navigation',state:'started',data:{step:name}});
             const node = STEP_TO_PROGRESS[name];
-            if (node) reportProgress({platform: 'taobao_instant', node, state: 'running'});
+            if (node) void progress({platform: 'taobao_instant', node, state: 'running'});
           },
         });
 
@@ -110,15 +134,18 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
 
         // 结算页截图的 sha256 作为本笔报价的页面证据；没有证据就不产出报价，
         // 避免出现「有金额但没有页面依据」的不可核对数据。
-        evidence = quote.checkoutSha256 ? {
-          id: randomUUID(),
-          sha256: quote.checkoutSha256,
-          screenshot: quote.checkoutImagePath ?? '.runtime/tb-checkout-final.png',
-          text_file: '',
-          captured_at: new Date().toISOString(),
-          page_stage: 'checkout',
-        } : null;
-        if (quote.totalFen != null && quote.totalFen > 0 && evidence) {
+        evidence = quote.checkoutEvidence ?? null;
+        if (quote.totalFen != null && quote.totalFen >= 0 && evidence && quote.store && quote.storeAddress && quote.item && quote.itemSpec && quote.storeEvidence && quote.itemEvidence) {
+          const previous=live.mapping?.candidate.supply.store;
+          const storeKey=previous && normalize(previous.name)===normalize(quote.store) && normalize(previous.address)===normalize(quote.storeAddress)
+            ? previous.key : digest(['taobao_instant',quote.store,quote.storeAddress]);
+          const actualSupply={store:{...live.target.supply.store,key:storeKey,name:quote.store,address:quote.storeAddress},
+            item:{...live.target.supply.item,name:quote.item,spec:quote.itemSpec}};
+          const target={...live.target,supply:actualSupply,revision:digest(actualSupply)};
+          const exact={relation:'exact' as const,reason:'本次页面已核对',missing:[]};
+          verifiedLive={...live,target,mapping:{id:randomUUID(),targetId:target.id,targetRevision:target.revision,
+            candidate:{platform:'taobao_instant',entry:task.entry_point,supply:actualSupply,reference:quote.storeEvidence.id,evidence:quote.storeEvidence},
+            store:exact,item:exact,status:'verified',proposedAt:quote.storeEvidence.captured_at,reviewedAt:quote.storeEvidence.captured_at}};
           // 收窄为非空常量，供下方闭包安全引用
           const ev: Evidence = evidence;
           const money = (fen: number | null) => fen == null ? null : {raw: `¥${(fen / 100).toFixed(2)}`, fen, evidence: ev};
@@ -151,9 +178,9 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
             quote_valid: true,
             detail_complete: quote.packagingFen != null && quote.deliveryFen != null,
             basket_items: [{
-              product_id: live.target.supply.item.key,
-              name: itemName,
-              variant: live.target.supply.item.spec ?? '1人份',
+              product_id: live.target.id,
+              name: quote.item,
+              variant: quote.itemSpec,
               quantity: 1,
             }],
             account_ref: task.account_ref,
@@ -161,48 +188,49 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
             entry_point: task.entry_point,
             evidence_refs: [evidence],
             contract_version: task.contract_version,
-            collector_version: 'taobao-0.1.0',
+            collector_version: 'taobao-0.2.0',
             details: {
               components: {
-                subtotal: money(quote.discountFen ?? quote.originalFen),
+                subtotal: null,
                 packaging: money(quote.packagingFen),
                 delivery: money(quote.deliveryFen),
-                other: money(quote.redPacketFen),
-                discount: money(quote.discountFen),
+                other: null,
+                discount: null,
               },
-              subtotalBasis: 'after_discount',
-              feesSeparate: true,
+              subtotalBasis: 'unknown',
+              feesSeparate: null,
               eta: null,
               coupons: null,
               missing: {},
               reconciled: false,
               contextEvidence: ev,
-              storeEvidence: ev,
-              itemEvidence: ev,
+              storeEvidence: quote.storeEvidence,
+              itemEvidence: quote.itemEvidence,
             },
           };
           status = observation.detail_complete ? 'success' : 'partial';
           availability = 'available';
-          reportProgress({platform: 'taobao_instant', node: '采数完成', state: 'completed'});
+          void progress({platform: 'taobao_instant', node: '采数完成', state: 'completed'});
         } else {
           const failedStep = quote.steps.find(s => !s.ok);
-          error_code = failedStep ? `taobao_${failedStep.name.replace(/[^\w]/g, '_')}_failed` : 'taobao_no_quote';
+          error_code = quote.error ?? (failedStep ? `taobao_${failedStep.name.replace(/[^\w]/g, '_')}_failed` : 'taobao_no_quote');
           note('result', error_code);
-          reportProgress({platform: 'taobao_instant', node: STEP_TO_PROGRESS[failedStep?.name ?? ''] ?? '采数完成', state: 'failed', message: error_code});
+          void progress({platform: 'taobao_instant', node: STEP_TO_PROGRESS[failedStep?.name ?? ''] ?? '采数完成', state: 'failed', message: error_code});
         }
       } catch (e) {
         error_code = (e as Error).message.slice(0, 120);
         note('exception', error_code);
-        reportProgress({platform: 'taobao_instant', node: '采数完成', state: 'failed', message: error_code});
+        void progress({platform: 'taobao_instant', node: '采数完成', state: 'failed', message: error_code});
       }
+      emit?.({phase:'navigation',state:status==='success'||status==='partial'?'succeeded':'failed',errorCode:error_code ?? undefined});
 
       const finished_at = new Date().toISOString();
       return {
         status, error_code, availability, observation, trace,
         evidence, started_at, finished_at,
-        cleanup: 'untouched',
+        cleanup,
         cost: {model_yuan: null, execution_ms: Date.now() - started},
-        ...(observation && live ? {resolvedLive: live} : {}),
+        ...(observation && verifiedLive ? {resolvedLive: verifiedLive} : {}),
       };
     },
   };

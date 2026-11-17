@@ -6,6 +6,7 @@
 
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {popupCloseControl} from './popup-safety.js';
 
 const run = promisify(execFile);
 
@@ -34,6 +35,7 @@ export interface U2Semantic {
 export const nodeLabel = (n: U2Node) => `${n.text} ${n.desc}`.trim();
 
 export interface U2SemanticOptions {
+  serial: string;
   /** u2 服务端口（默认 9008） */
   port?: number;
   /** 读树的超时 */
@@ -91,7 +93,7 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
       if (!u2Reader) {
         const {AndroidUiTreeReader} = await import('./android-uitree.js');
         u2Reader = await AndroidUiTreeReader.create({
-          serial: process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133',
+          serial: options.serial,
           adbPath: process.env.MIDSCENE_ADB_PATH ?? 'adb',
         });
       }
@@ -115,13 +117,13 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
       // 残缺时重启 u2 重读一次，避免语义定位“时好时坏”。
       if (rich >= 15) return out;
       console.log(`[screen] 节点不完整 rich=${rich}，重启 u2 重读`);
-      await run(process.env.MIDSCENE_ADB_PATH ?? 'adb', ['-s', process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133',
+      await run(process.env.MIDSCENE_ADB_PATH ?? 'adb', ['-s', options.serial,
         'shell', 'pkill', '-f', 'com.wetest.uia2'], {timeout: 6_000, encoding: 'utf8'}).catch(() => null);
       await new Promise(r => setTimeout(r, 900));
       u2Reader = null; // 关键：必须丢弃旧 reader，否则重读还是空树
       const {AndroidUiTreeReader} = await import('./android-uitree.js');
       u2Reader = await AndroidUiTreeReader.create({
-        serial: process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133',
+        serial: options.serial,
         adbPath: process.env.MIDSCENE_ADB_PATH ?? 'adb',
       });
       const tree2 = await u2Reader.read() as any;
@@ -147,7 +149,11 @@ export function createU2Semantic(options: U2SemanticOptions): U2Semantic {
       signal: AbortSignal.timeout(options.readTimeoutMs ?? 15_000),
     });
     const data = (await resp.json()) as { result?: string };
-    return parseU2Xml(data.result ?? '');
+    const raw=parseU2Xml(data.result ?? '');
+    const logical=await options.logicalSize(), physicalSize=await options.physicalSize();
+    if (!(logical.width>0 && logical.height>0 && physicalSize.width>0 && physicalSize.height>0)) throw new Error('screen_geometry_unknown');
+    return raw.map(node=>({...node,left:node.left*logical.width/physicalSize.width,top:node.top*logical.height/physicalSize.height,
+      width:node.width*logical.width/physicalSize.width,height:node.height*logical.height/physicalSize.height}));
   };
 
   const waitStable = async (rounds = 4): Promise<U2Node[]> => {

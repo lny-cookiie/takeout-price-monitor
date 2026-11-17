@@ -175,59 +175,45 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
     }
     if (method==='POST' && path==='/api/bd/runs') {
       // BD 采数入口：按 城市/品牌/门店/爆品 匹配已登记商品，创建真实采集任务并落库。
-      const input = validator<{city:string;brand:string;store?:string;item:string;platforms:string[]}>(
+      // 请求编号由客户端提供：重复提交同一编号返回原比较组，编号相同但内容不同返回冲突。
+      const input = validator<{city:string;brand:string;store?:string;item:string;platforms:string[];requestId?:string}>(
         object({city:string(40),brand:string(60),store:string(120,0),item:string(80),
-          platforms:array(string(30),3,1)},['city','brand','item','platforms']),'BD 采集请求')(await body(200_000));
+          platforms:array(string(30),3,1),requestId:string(36,0)},['city','brand','item','platforms']),'BD 采集请求')(await body(200_000));
       const norm=(v:string)=>String(v||'').replace(/\s+/g,'').replace(/[（(].*?[)）]/g,'').replace(/&/g,'');
       const cat = store.catalog();
-      const hit = cat.find(e=>(!input.city || norm(e.city).includes(norm(input.city))) &&
+      const hits = cat.filter(e=>(!input.city || norm(e.city).includes(norm(input.city))) &&
         norm(e.brand).includes(norm(input.brand)) &&
         (!input.store || norm(e.storeName).includes(norm(input.store))) &&
         norm(e.itemName).includes(norm(input.item)));
+      const hit = hits[0];
       if (!hit) { reply(404,{error:'no_matching_catalog_entry',message:'没有匹配的已登记商品，请先在 UE 工作台导入包销品清单'}); return true; }
+      if (hits.length!==1) { reply(409,{error:'ambiguous_catalog_entry',message:'匹配到多个商品或规格，请补充门店和商品名称后重试'}); return true; }
       const profiles = store.list<Profile>('market_profiles');
       const profile = profiles.find(p=>p.eligibility.jd) ?? profiles[0];
       if (!profile) { reply(400,{error:'no_profile',message:'没有可用的配送地址与测试账号条件'}); return true; }
       const valid = input.platforms.filter(p=>(PLATFORMS as readonly string[]).includes(p));
       if (!valid.length) { reply(400,{error:'no_valid_platform',message:'请至少选择一个有效平台'}); return true; }
-      const result: {platform:string;runId?:string;state:string;message?:string}[] = [];
-      for (const platform of valid) {
-        if (platform === 'jd') {
-          try {
-            const requestId = crypto.randomUUID();
-            store.startSpecifiedRun({requestId, targetId:hit.id, profileId:profile.id});
-            result.push({platform, runId:requestId, state:'queued'});
-          } catch (e) {
-            result.push({platform, state:'failed', message:(e as Error).message.slice(0,160)});
-          }
-        } else {
-          // 美团与淘宝闪购走同一套「找到/创建计划 -> runNow 落库」的路径。
-          // 淘宝若采集许可未满足，runNow 会抛 live_source_not_ready，按失败如实返回，不伪装成未接入。
-          try {
-            const platformKey = platform as 'meituan' | 'taobao_instant';
-            const label = platformKey === 'meituan' ? '美团' : '淘宝闪购';
-            const planId = createHash('sha256').update(['bd',hit.id,platformKey].join('|')).digest('hex');
-            const existingPlan = (store.list<Plan>('market_plans') as Plan[]).find(p=>p.id===planId);
-            if (!existingPlan) {
-              store.savePlan({id:planId, name:`BD ${label}采集 · ${hit.itemName}`, targetIds:[hit.id], profileId:profile.id,
-                quantity:1, startDate:new Date().toISOString().slice(0,10), days:1,
-                times:{lunch:'11:00',dinner:'17:00',night:'21:00'}, enabled:true});
-            }
-            const hour=Number(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',hour:'numeric',hourCycle:'h23'}).format(new Date()));
-            const meal = (hour<16?'lunch':hour<21?'dinner':'night') as 'lunch'|'dinner'|'night';
-            const run = store.runNow(planId, meal, platformKey);
-            result.push({platform, runId:String(run), state:'queued'});
-          } catch (e) {
-            result.push({platform, state:(e as Error).message === 'live_source_not_ready' ? 'not_licensed' : 'failed',
-              message:(e as Error).message === 'live_source_not_ready'
-                ? '该平台的采集许可未满足，暂不能发起真实采集'
-                : (e as Error).message.slice(0,160)});
-          }
-        }
-      }
+      const requestId = input.requestId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.requestId)
+        ? input.requestId : crypto.randomUUID();
+      const selected=[...new Set(valid)] as Platform[];
+      store.startSpecifiedRun({requestId,targetId:hit.id,profileId:profile.id,platforms:selected});
+      const result=selected.map(platform=>({platform,runId:requestId,state:'queued'}));
       tick();
       reply(201,{matched:{id:hit.id,storeName:hit.storeName,itemName:hit.itemName,city:hit.city},profile:{id:profile.id,name:profile.name},platforms:result});
       return true;
+    }
+    const bdRetry=/^\/api\/bd\/runs\/([a-f0-9-]{36})\/retry$/.exec(path);
+    if (method==='POST' && bdRetry) {
+      const input=validator<{platform:string}>(object({platform:{type:'string',enum:[...PLATFORMS]}},['platform']),'重试请求')(await body());
+      store.retryGroupPlatform(bdRetry[1]!,input.platform as Platform);
+      tick(); reply(202,{runId:bdRetry[1],platform:input.platform}); return true;
+    }
+    const cartConfirm=/^\/api\/bd\/slots\/([\w:-]{1,140})\/confirm-empty-cart$/.exec(path);
+    if (method==='POST' && cartConfirm) {
+      const input=validator<{confirmed:boolean}>(object({confirmed:{type:'boolean'}},['confirmed']),'购物车人工确认')(await body());
+      if (input.confirmed!==true) { reply(400,{error:'confirmation_required'}); return true; }
+      store.legacy.confirmCartEmpty(cartConfirm[1]!);
+      reply(200,{confirmed:true}); return true;
     }
     if (method==='POST' && path==='/api/market/runs') {
       const input = validator<{planId:string;meal:Meal;platform?:Platform}>(object({planId:string(60),meal:{type:'string',enum:Object.keys(meals)},

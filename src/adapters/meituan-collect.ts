@@ -100,6 +100,7 @@ export function meituanActualPayable(quote: Pick<MeituanQuote, 'coupon_before_fe
 }
 
 export interface MeituanFlowOptions {
+  serial: string;
   semantic: U2Semantic;
   /** 搜索结果页的门店卡需要视觉兜底：返回目标点的逻辑坐标 */
   visualLocate?: (hint: string) => Promise<{ x: number; y: number } | null>;
@@ -114,6 +115,8 @@ export interface MeituanFlowOptions {
   sleep: (ms: number) => Promise<void>;
   brand: string;
   itemName: string;
+  onCartMutation?: () => Promise<void>;
+  onStoreReached?: () => Promise<void>;
 }
 
 /**
@@ -155,7 +158,7 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     const {promisify} = await import('node:util');
     const run = promisify(execFile);
     const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
-    const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+    const serial = options.serial;
     // -S 先 force-stop 再启动：单纯 am start 不会清栈，会停在上一轮的门店页/结算页。
     // 注意：这里 force-stop 是重启 App 回到首页，不是清数据，符合“点错返回上一页”的约束边界。
     await run(adb, ['-s', serial, 'shell', 'am', 'start', '-S', '-n',
@@ -201,8 +204,20 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   }
 
   step('外卖频道搜索按钮');
-  const search = await semantic.find(n => nodeLabel(n).trim() === '搜索' && n.width > 40, 8_000)
+  const findSearch = async () => await semantic.find(n => nodeLabel(n).trim() === '搜索' && n.width > 40, 8_000)
     ?? await semantic.find(n => /搜索/.test(nodeLabel(n)) && n.width > 40, 6_000);
+  let search = await findSearch();
+  // 美团结账类优惠弹窗会盖住整页（例：神券已到账）。只按返回键关闭，绝不点“去使用/全部收下”领取。
+  for (let i = 0; i < 2 && !search; i++) {
+    const probe = await semantic.read().catch(() => [] as U2Node[]);
+    const labels = probe.map(n => nodeLabel(n));
+    const popup = labels.some(l => /神券已到账|优惠券已到账|去使用|全部收下|立即领取/.test(l));
+    if (!popup) break;
+    console.log('[meituan] 检测到优惠弹窗，按返回键关闭（不领取）');
+    await semantic.back();
+    await semantic.waitStable(3);
+    search = await findSearch();
+  }
   if (!search) throw new Error('meituan_no_search_button');
   await semantic.tap(search, '搜索按钮');
 
@@ -219,7 +234,7 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
       const {promisify} = await import('node:util');
       const run = promisify(execFile);
       const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
-      const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+      const serial = options.serial;
       const {stdout} = await run(adb, ['-s', serial, 'shell', 'dumpsys window | grep mCurrentFocus'], {timeout: 8_000, encoding: 'utf8'});
       // 美团搜索结果页与搜索输入页共用 GlobalSearchActivity（2026-11-13 实测 mCurrentFocus），
       // 只认 SearchResultActivity 会让结果页永远判不出来，进而错走兜底并抛 meituan_no_search_entry。
@@ -307,7 +322,7 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     const {promisify} = await import('node:util');
     const run = promisify(execFile);
     const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
-    const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+    const serial = options.serial;
     let entered = false;
     for (let i = 0; i < 8 && !entered; i++) {
       const {stdout} = await run(adb, ['-s', serial, 'shell', 'dumpsys window | grep mCurrentFocus'],
@@ -323,6 +338,7 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     }
     if (!entered) throw new Error('meituan_store_not_entered');
   }
+  await options.onStoreReached?.();
   step('门店页搜索图标');
   // 美团门店页有两种容器：WMRestaurantActivity 的“搜索”可语义读取，MRNStandardActivity 读不到，需要视觉兜底。
   // 点击后必须进入店内搜索页（出现“请输入商品名”或“热门搜索”）；否则返回重试，避免点成分享/收藏后一路错下去。
@@ -337,7 +353,7 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
       const {promisify} = await import('node:util');
       const run = promisify(execFile);
       const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
-      const serial = process.env.MIDSCENE_ADB_SERIAL ?? '2NP0224627007133';
+      const serial = options.serial;
       const {stdout} = await run(adb, ['-s', serial, 'shell', 'dumpsys window | grep mCurrentFocus'], {timeout: 8_000, encoding: 'utf8'});
       return /ShopSearch|shopsearch|SearchActivity.*shop/i.test(stdout);
     } catch { return false; }
@@ -377,6 +393,7 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   }
 
   step('单品');
+  await options.onCartMutation?.();
   // 单品列表同为 MRNX：视觉定位商品卡（提示词贴商品名+价格），语义兜底。
   let itemTapped = false;
   const itemCandidates = await semantic.findAll(n => nodeLabel(n).trim() === itemName, 5_000).catch(() => []);

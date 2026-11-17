@@ -1,0 +1,7 @@
+{
+  "city": "示例市",
+  "brand": "示例品牌",
+  "store": "示例品牌（示例店）",
+  "item": "示例商品",
+  "platforms": ["jd", "meituan", "taobao_instant"]
+}

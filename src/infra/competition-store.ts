@@ -217,7 +217,7 @@ export class CompetitionStore {
         const account=profile.eligibility[platform];
         if (!account) continue;
         const verified=profile.storeQualifications?.find(q=>q.platform===platform && q.storeKey===target.supply.store.key);
-        eligibility[platform]={...account,storeCustomer:verified?.evidence ? verified.customer : 'unknown',storeEvidence:verified?.evidence};
+        eligibility[platform]={...account,storeCustomer:verified?.evidence ? verified.customer : 'unknown',storeEvidence:verified?.evidence,storeKey:verified?.storeKey};
       }
       const resolvedProfile={...profile,eligibility,storeQualifications:undefined};
       return platforms.map(platform => {
@@ -242,6 +242,22 @@ export class CompetitionStore {
   runNow(id: string, meal: Meal, onlyPlatform?:Platform) {
     if (onlyPlatform && !this.sources.permitted(onlyPlatform)) throw new Error('live_source_not_ready');
     return this.enqueue(this.get<StoredPlan>('market_plans',id),meal,new Date(),null,onlyPlatform);
+  }
+  retryGroupPlatform(runId:string, platform:Platform) {
+    const slot=this.legacy.snapshot(runId).slots.find(s=>s.task.platform===platform);
+    if (!slot) throw new Error('找不到该平台的采集任务');
+    if (!this.sources.permitted(platform)) throw new Error('live_source_not_ready');
+    if (!(slot.state==='completed' && slot.result && ['failed','blocked'].includes(slot.result.status)) && !['interrupted','source_blocked'].includes(slot.state)) throw new Error('只有已结束的失败任务可以重试');
+    const paused=this.db.prepare('SELECT 1 FROM paused_resources WHERE key IN (?,?)').get(`account:${slot.task.platform}:${slot.task.account_ref}`,`device:${slot.task.device_ref}`);
+    if (paused) throw new Error('设备或账号仍处于隔离状态');
+    const needsConfirmation=slot.state==='interrupted' || !!slot.result && !['untouched','restored'].includes(slot.result.cleanup);
+    const confirmed=this.db.prepare("SELECT 1 FROM events WHERE slot_id=? AND json_extract(payload,'$.code')='cart_empty_confirmed_by_user' AND json_extract(payload,'$.at')>=? LIMIT 1")
+      .get(slot.task.slot_id,slot.result?.finished_at ?? '');
+    if (needsConfirmation && !confirmed) throw new Error('购物车状态未确认，不能重试');
+    const now=new Date(), task={...slot.task,due_at:now.toISOString(),deadline_at:new Date(+now+900_000).toISOString()};
+    const result=this.db.prepare("UPDATE slots SET state='queued',due_at=?,deadline_at=?,task_json=?,result_json=NULL,next_attempt_at=NULL WHERE id=? AND state IN ('completed','interrupted','source_blocked')")
+      .run(task.due_at,task.deadline_at,JSON.stringify(task),task.slot_id);
+    if (!result.changes) throw new Error('任务状态已变化');
   }
   saveJdStore(input:JdStoreInput):JdSavedStore {
     const id=digest([normalize(input.city).replace(/市$/,''),normalize(input.district),jdBrandKey(input.brand),normalize(input.storeName)]);
@@ -286,7 +302,7 @@ export class CompetitionStore {
     return this.startJdRun({...input,city,district,brand,storeName,businessAddress:anchor?.address ?? reviewed?.address,
       verifiedStoreKey:anchor?.key,verifiedStoreName:anchor?.name ?? reviewed?.name});
   }
-  startSpecifiedRun(input:{requestId:string;targetId:string;profileId:string;couponCheckoutConsent?:{reference:string}}) {
+  startSpecifiedRun(input:{requestId:string;targetId:string;profileId:string;couponCheckoutConsent?:{reference:string};platforms?:Platform[]}) {
     const existing=this.run(input.requestId);
     if(existing) {
       const t=this.legacy.snapshot(existing.id).slots[0]?.task;
@@ -306,16 +322,30 @@ export class CompetitionStore {
     const origin:JdRunInput={requestId:input.requestId,profileId:profile.id,savedStoreId:entry.savedStoreId,city:entry.city,district:entry.district,brand:entry.brand,storeName:entry.storeName,
       businessAddress:anchor?.address??reviewed?.address??(target.supply.store.address||undefined),verifiedStoreKey:anchor?.key,verifiedStoreName:anchor?.name??reviewed?.name,
       ...(identity?.sourceRevision&&source?{verifiedContext:{store:identity.store,evidence:identity.evidence,sourceRevision:identity.sourceRevision}}:{})};
+    const selected=input.platforms ?? ['jd'];
     const account=profile.eligibility.jd, qualification=profile.storeQualifications?.find(q=>q.platform==='jd'&&q.storeKey===target.supply.store.key);
-    const resolvedProfile={...profile,storeQualifications:undefined,eligibility:{jd:account?{...account,storeCustomer:qualification?.customer??'unknown',storeEvidence:qualification?.evidence}:undefined}};
+    const resolvedProfile={...profile,storeQualifications:undefined,eligibility:{jd:account?{...account,storeCustomer:qualification?.customer??'unknown',storeEvidence:qualification?.evidence,storeKey:qualification?.storeKey}:undefined}};
     const task:Task={contract_version:BUSINESS_VERSION,tenant_id:TENANT,source_id:liveSources.jd,slot_id:input.requestId+'_jd',run_id:input.requestId,comparison_group_id:input.requestId,
       platform:'jd',store_id:entry.storeId??entry.savedStoreId,basket_id:target.id,scenario_id:digest([resolvedProfile,entry.revision,source?.entry]),entry_point:source?.entry??'unconfigured',
-      account_ref:source?.account??'jd_pending',device_ref:source?.device??'jd_pending',delivery_point_id:profile.point,due_at:now.toISOString(),deadline_at:new Date(+now+210_000).toISOString(),
+      account_ref:source?.account??'jd_pending',device_ref:source?.device??'jd_pending',delivery_point_id:profile.point,due_at:now.toISOString(),deadline_at:new Date(+now+(selected.length>1?900_000:210_000)).toISOString(),
       data_mode:'live',fault:'none',max_attempts:1,timeout_seconds:180,requested_fields:['checkout_payable','delivery_fee','packaging_fee'],required_fields:['checkout_payable'],
       allowed_actions:['browse','select_variant','modify_owned_test_cart','read_checkout'],jdOrigin:origin,
       specified:{catalogRevision:entry.revision,source:entry.source,sourceVersion:entry.sourceVersion,...(input.couponCheckoutConsent?{couponCheckoutConsent:{reference:input.couponCheckoutConsent.reference,confirmedAt:now.toISOString()}}:{})},
       live:{target,mapping:this.mapping(target,'jd',source?.entry),profile:resolvedProfile,planName:'指定单品采集',meal,quantity:1,couponPolicy:input.couponCheckoutConsent?'claim_on_checkout':'page_applied',sourceRevision:source?digest(source):null}};
-    this.legacy.createRun({id:input.requestId,scenario:'competition',created_at:now.toISOString(),label:(entry.source==='trial'?'单品试采':'包销品采集')+' · '+entry.itemName,schedule_key:null},[task]);
+    const peers=selected.filter(p=>p!=='jd').map(platform=>{
+      const peerSource=this.sources.get(platform);
+      const mapping=this.mapping(target,platform,peerSource?.entry);
+      const peerAccount=profile.eligibility[platform];
+      const qualification=profile.storeQualifications?.find(q=>q.platform===platform && q.storeKey===mapping?.candidate.supply.store.key);
+      const peerProfile={...profile,storeQualifications:undefined,eligibility:{...profile.eligibility,[platform]:peerAccount?{...peerAccount,storeCustomer:qualification?.evidence?qualification.customer:'unknown' as const,storeEvidence:qualification?.evidence,storeKey:qualification?.storeKey}:undefined}};
+      return {...task,slot_id:input.requestId+'_'+platform,platform,source_id:liveSources[platform],
+        store_id:target.supply.store.key,entry_point:peerSource?.entry??'unconfigured',
+        account_ref:peerSource?.account??platform+'_pending',device_ref:peerSource?.device??platform+'_pending',
+        deadline_at:new Date(+now+900_000).toISOString(),timeout_seconds:240,
+        jdOrigin:undefined,specified:undefined,
+        live:{target,mapping,profile:peerProfile,planName:'指定单品采集',meal,quantity:1,couponPolicy:'page_applied',sourceRevision:peerSource?digest(peerSource):null}} satisfies Task;
+    });
+    this.legacy.createRun({id:input.requestId,scenario:'competition',created_at:now.toISOString(),label:(entry.source==='trial'?'单品试采':'包销品采集')+' · '+entry.itemName,schedule_key:null},[...(selected.includes('jd')?[task]:[]),...peers]);
     return input.requestId;
   }
   startJdRun(input:JdRunInput) {
@@ -452,7 +482,8 @@ export class CompetitionStore {
     const entry=this.catalog().find(e=>e.id===id);
     if(!entry)throw new Error('找不到清单商品');
     const runs=this.db.prepare(`SELECT DISTINCT run_id,due_at FROM slots WHERE json_extract(task_json,'$.live.target.id')=? ORDER BY due_at DESC LIMIT 30`).all(id);
-    const latest=runs.find(r=>this.slots(String(r.run_id)).some(s=>s.task.specified?.catalogRevision===entry.revision))?.run_id as string|undefined;
+    const target=this.currentTarget(id);
+    const latest=runs.find(r=>this.legacy.snapshot(String(r.run_id)).slots.some(s=>s.task.live?.target.id===id && s.task.live.target.revision===target.revision))?.run_id as string|undefined;
     const slots=latest?this.slots(latest).filter(s=>s.task.live?.target.id===id):[];
     return {entry,rows:comparisonRows(slots),run:latest?this.runDetails(latest):null,
       history:runs.map(r=>this.run(String(r.run_id))).filter(Boolean)};

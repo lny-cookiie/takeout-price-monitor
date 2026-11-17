@@ -31,7 +31,7 @@ export function deviceQueueLength(): number {
  * @param platform 平台标识，仅用于日志与诊断
  * @param fn 实际采集逻辑
  */
-export async function withDeviceLock<T>(platform: string, fn: () => Promise<T>): Promise<T> {
+export async function withDeviceLock<T>(platform: string, fn: () => Promise<T>, signal?:AbortSignal): Promise<T> {
   const previous = tail;
   let release!: () => void;
   tail = new Promise<void>(resolve => { release = resolve; });
@@ -40,6 +40,7 @@ export async function withDeviceLock<T>(platform: string, fn: () => Promise<T>):
   try {
     await previous;
     waiting -= 1;
+    signal?.throwIfAborted();
     current = platform;
     const waitedMs = Date.now() - queuedAt;
     if (waitedMs > 500) console.log(`[device-lock] ${platform} 取得设备（排队 ${Math.round(waitedMs / 1000)}s）`);

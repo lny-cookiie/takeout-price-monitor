@@ -155,7 +155,7 @@ export class SqliteStore implements CollectionStore {
           if (before.amount_fen !== o.amount_fen) this.event(task,'business','price_changed',{ before_fen: before.amount_fen, after_fen: o.amount_fen, delta_fen: o.amount_fen-before.amount_fen, before_observation_id: before.observation_id, after_observation_id: o.observation_id });
         }
       }
-      const quarantine=result.cleanup==='quarantined';
+      const quarantine=result.cleanup==='quarantined' || result.cleanup==='needs_attention';
       // 购物车残留等业务态可自动恢复，不再暂停渠道；只有验证码/风控/隔离现场才需要人工介入。
       const pause=quarantine || ['captcha_required','access_restricted','rate_limited'].includes(result.error_code ?? '');
       const retry=pause ? null : retryAt;
@@ -187,6 +187,24 @@ export class SqliteStore implements CollectionStore {
     // Only an explicit manual test can reset owned synthetic sessions. Live scopes are never changed.
     this.db.prepare('DELETE FROM paused_resources WHERE key IN (?,?)').run('account:meituan:fixture_meituan_wallet_1','account:taobao_instant:fixture_taobao_instant_wallet_1');
   }
+  confirmCartEmpty(slotId:string): void {
+    this.transaction(() => {
+      const row=this.db.prepare('SELECT task_json,state,result_json FROM slots WHERE id=?').get(slotId);
+      if (!row) throw new Error('slot_not_found');
+      const task=json<Task>(row.task_json);
+      if (task.data_mode!=='live' || !['completed','interrupted'].includes(String(row.state))) throw new Error('cart_confirmation_not_allowed');
+      const result=row.result_json ? json<AttemptResult>(row.result_json) : null;
+      const keys=[accountKey(task),deviceKey(task)];
+      const pauses=keys.map(key=>this.db.prepare('SELECT code FROM paused_resources WHERE key=?').get(key));
+      const code=String(pauses[0]?.code ?? '');
+      if (!code || pauses.some(p=>p?.code!==code) || !(code==='process_interrupted' && row.state==='interrupted' ||
+          code==='legacy_cleanup_unverified' && !!this.db.prepare("SELECT 1 FROM events WHERE slot_id=? AND json_extract(payload,'$.code')='legacy_cleanup_unverified'").get(slotId) ||
+          code==='scope_paused_after_'+(result?.error_code ?? 'cleanup_failed') && ['quarantined','needs_attention'].includes(result?.cleanup ?? ''))) throw new Error('cart_confirmation_not_allowed');
+      if (keys.some(key=>this.db.prepare('SELECT 1 FROM locks WHERE key=?').get(key))) throw new Error('resource_busy');
+      for (const key of keys) this.db.prepare('DELETE FROM paused_resources WHERE key=? AND code=?').run(key,code);
+      this.event(task,'collection','cart_empty_confirmed_by_user',{previous_pause:code,confirmation:'manual'});
+    });
+  }
   recoverInterrupted(): number {
     return this.transaction(() => {
       const rows = this.db.prepare("SELECT task_json FROM slots WHERE state='running'").all() as Row[];
@@ -195,11 +213,8 @@ export class SqliteStore implements CollectionStore {
         const attempt=this.db.prepare('SELECT id FROM attempts WHERE slot_id=? AND result_json IS NULL ORDER BY number DESC LIMIT 1').get(t.slot_id);
         if (attempt) this.closeOpenSteps(String(attempt.id),'interrupted','process_interrupted');
         this.db.prepare("UPDATE slots SET state='interrupted' WHERE id=?").run(t.slot_id);
-        // 这里只归档上次未完成的 attempt，不再冻结账号与设备。
-        // 服务重启/崩溃属于运维事件，不是业务性失败；此前无条件 pauseScope(…, true)
-        // 会把 device:<serial> 写进 paused_resources 永久冻结整台设备，
-        // 导致重启后所有平台一律 source_blocked（2026-11-13 实测踩坑，需手工清表才能恢复）。
-        // 真正需要人工核对购物车的场景由 recordAttempt 里的 collector_crashed 分支负责冻结。
+        // 中断时无法证明购物车状态；隔离设备和账号，待人工核对后恢复。
+        if (t.data_mode === 'live') this.pauseScope(t,'process_interrupted',true);
         this.event(t,'collection','process_interrupted');
       }
       this.db.exec('DELETE FROM locks');

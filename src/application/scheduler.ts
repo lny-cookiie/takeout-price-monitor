@@ -66,7 +66,7 @@ export class Scheduler {
       const duration = Math.max(1,Math.min(claim.task.timeout_seconds*1000,Date.parse(claim.task.deadline_at)-Date.now()));
       const timeout = setTimeout(() => controller.abort(),duration);
       const work = (async () => {
-        const audited=!!(claim.task.shelf || claim.task.jdShelfParent || claim.task.specified);
+        const audited=claim.task.data_mode==='live';
         const emit:StepSink|undefined=audited && this.store.recordStep ? event=>this.store.recordStep!(claim,event) : undefined;
         const startedAt=new Date().toISOString();
         let result: AttemptResult, children:Task[]=[];

@@ -1,10 +1,14 @@
 import { PLATFORMS, type Platform, type QuoteReview, type Slot } from '../domain/contracts.js';
-import { breakdownKeys, profileApplies, sameEligibility, type BreakdownKey, type LiveContext } from '../domain/competition.js';
+import { breakdownKeys, profileApplies, sameEligibility, itemGate, normalize, type BreakdownKey, type LiveContext } from '../domain/competition.js';
 import { STORES } from '../domain/catalog.js';
 import type { RunInfo } from './ports.js';
 
 const validCheckout = (s?: Slot) => {
   const o = s?.result?.observation;
+  // 早期两平台采集器未验证实际店品，历史记录保留但不能进入可比结果。
+  if (o && ['meituan-0.1.0','taobao-0.1.0'].includes(o.collector_version)) return null;
+  if (o && /^(meituan|taobao)-/.test(o.collector_version) &&
+      (!s?.result?.resolvedLive?.mapping || !o.details?.storeEvidence || !o.details?.itemEvidence)) return null;
   return s?.review?.decision!=='disputed' && o?.quote_valid && o.price_kind==='checkout_payable' && o.value_origin===(s?.task.data_mode==='live' ? 'observed' : 'synthetic') ? o : null;
 };
 export function comparePair(a?: Slot, b?: Slot) {
@@ -12,15 +16,21 @@ export function comparePair(a?: Slot, b?: Slot) {
   if (a?.review?.decision==='disputed' || b?.review?.decision==='disputed') return no('有报价在人工复核中发现不符');
   const first = validCheckout(a), second = validCheckout(b);
   if (!first || !second || !a || !b) return no('缺少可用的结算应付金额');
-  const x = a.task.live,y = b.task.live;
+  const x = a.result?.resolvedLive ?? a.task.live,y = b.result?.resolvedLive ?? b.task.live;
   if (!x?.mapping || !y?.mapping || first.value_origin!=='observed' || second.value_origin!=='observed' ||
       a.task.comparison_group_id!==b.task.comparison_group_id || a.task.run_id!==b.task.run_id || a.task.platform===b.task.platform ||
       x.mapping.status!=='verified' || y.mapping.status!=='verified' || x.mapping.targetRevision!==x.target.revision || y.mapping.targetRevision!==y.target.revision ||
-      x.target.id!==y.target.id || x.target.revision!==y.target.revision || x.quantity!==y.quantity || x.meal!==y.meal ||
+      x.target.id!==y.target.id || x.quantity!==y.quantity || x.meal!==y.meal ||
       a.task.delivery_point_id!==b.task.delivery_point_id || x.couponPolicy!==y.couponPolicy)
     return no('门店、商品、配送地址或监测条件不同');
+  const xs=x.mapping.candidate.supply, ys=y.mapping.candidate.supply;
+  if (!xs.store.name || !ys.store.name || !xs.store.address || !ys.store.address || !xs.store.city || !ys.store.city ||
+      !xs.store.brand || !ys.store.brand || normalize(xs.store.city).replace(/市$/,'')!==normalize(ys.store.city).replace(/市$/,'') || normalize(xs.store.brand)!==normalize(ys.store.brand) ||
+      normalize(xs.item.name)!==normalize(ys.item.name) || itemGate(xs,ys)) return no('实际门店或商品规格未核实为同城同品牌同品');
   if (!profileApplies(x.profile,Date.parse(first.observed_at)) || !profileApplies(y.profile,Date.parse(second.observed_at))) return no('账号资格核对已过期或未登记有效期');
   if (!sameEligibility(x.profile.eligibility[a.task.platform],y.profile.eligibility[b.task.platform])) return no('新老客或会员权益条件不同，或资格未核实');
+  if (x.profile.eligibility[a.task.platform]?.storeKey!==xs.store.key || y.profile.eligibility[b.task.platform]?.storeKey!==ys.store.key)
+    return no('实际分店的账号资格尚未分别核实');
   const skew = Math.abs(Date.parse(first.observed_at)-Date.parse(second.observed_at));
   if (!Number.isFinite(skew) || skew>300_000) return no('观察时间相差超过 5 分钟，或缺少观察时间');
   const deltaFen=first.amount_fen-second.amount_fen, f=first.details, s=second.details;
@@ -55,13 +65,15 @@ export function comparisonRows(slots: Slot[], now = Date.now()) {
       const slot = byPlatform(p), o = amounts[i], review = slot?.review ?? null;
       const raw = slot?.result?.observation ?? null;
       const timestamp = o?.observed_at ?? slot?.result?.market?.prices[0]?.evidence.captured_at ?? null;
+      const actual=slot?.result?.resolvedLive ?? slot?.task.live;
       return [p,{observation:o,rawObservation:raw,review,market:slot?.result?.market ?? null,proof:slot?.result?.evidence ?? null,sourceId:slot?.task.source_id ?? null,
-        entry:slot?.task.entry_point ?? null,couponPolicy:slot?.task.live?.couponPolicy??null,mapping:slot?.task.live?.mapping ?? null,
-        eligibility:slot?.task.live?.profile.eligibility[p] ?? null,state:review?.decision==='disputed' ? 'disputed' : slot?.state==='completed' ? slot.result?.status ?? slot.state : slot?.state ?? 'not_collected',
+        entry:slot?.task.entry_point ?? null,couponPolicy:actual?.couponPolicy??null,mapping:actual?.mapping ?? null,
+        actualStore:o && slot?.result?.resolvedLive?.mapping?.status==='verified' ? slot.result.resolvedLive.mapping.candidate.supply.store : null,
+        eligibility:actual?.profile.eligibility[p] ?? null,state:review?.decision==='disputed' ? 'disputed' : slot?.state==='completed' ? slot.result?.status ?? slot.state : slot?.state ?? 'not_collected',
         reason:slot?.block_reason ?? slot?.result?.error_code ?? null,observedAt:timestamp,historical:timestamp ? now-Date.parse(timestamp)>900_000 : false}];
     })) as Record<Platform,{
       observation:ReturnType<typeof validCheckout>; rawObservation:ReturnType<typeof validCheckout>; review:QuoteReview|null; market:NonNullable<Slot['result']>['market'] | null; proof:NonNullable<Slot['result']>['evidence'];
-      sourceId:string|null; entry:string|null; couponPolicy:string|null; mapping:LiveContext['mapping']; eligibility:LiveContext['profile']['eligibility'][Platform] | null;
+      sourceId:string|null; entry:string|null; couponPolicy:string|null; mapping:LiveContext['mapping']; actualStore:LiveContext['target']['supply']['store']|null; eligibility:LiveContext['profile']['eligibility'][Platform] | null;
       state:string; reason:string|null; observedAt:string|null; historical:boolean
     }>;
     return {id,origin:task.data_mode==='live' ? 'observed' : 'synthetic', city:live?.target.supply.store.city ?? '模拟城市',
@@ -100,7 +112,7 @@ export function csv(rows: ComparisonRow[], run?: RunInfo, origin?: string) {
     const c = r.cells[p], o = c.observation, d = o?.details;
     const proof=o?.evidence_refs[0] ?? c.proof ?? c.market?.prices[0]?.evidence;
     const link=proof?.screenshot && origin ? new URL(proof.screenshot,origin).href : proof?.screenshot;
-    return [run?.id,r.origin,r.city,r.brand,r.store,r.address,r.item,r.spec,r.quantity,r.meal,r.profile,r.point,p,c.entry,c.couponPolicy,c.sourceId,c.observedAt,
+    return [run?.id,r.origin,r.city,r.brand,c.actualStore?.name ?? '',c.actualStore?.address ?? '',r.item,r.spec,r.quantity,r.meal,r.profile,r.point,p,c.entry,c.couponPolicy,c.sourceId,c.observedAt,
       o?.amount_fen,c.market?.prices.find(v=>v.kind==='display_current')?.raw,c.market?.prices.find(v=>v.kind==='display_reference')?.raw,
       o?.components.delivery_fee.amount_fen,o?.components.packaging_fee.amount_fen,d?.eta?.raw,d ? JSON.stringify(d.components) : null,
       d?.coupons ? JSON.stringify(d.coupons) : null,c.state,c.review?.decision,c.review?.note,[c.reason,...Object.values(d?.missing ?? {})].filter(Boolean).join('；'),

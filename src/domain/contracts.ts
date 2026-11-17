@@ -135,7 +135,7 @@ export function checkObservation(task: Task, o: Observation): void {
     } else {
       // 美团/淘宝闪购：没有京东货架映射概念，改为直接校验目标 ID、数量与单品名一致。
       if (!line || o.basket_items.length!==1 || line.product_id!==context.target.id ||
-        line.quantity!==context.quantity) throw new CollectionError('basket_mismatch');
+        line.quantity!==context.quantity || normalize(line.variant)!==normalize(context.target.supply.item.spec)) throw new CollectionError('basket_mismatch');
       if (normalize(line.name??'')!==normalize(context.target.supply.item.name)) throw new CollectionError('basket_mismatch');
     }
   }
@@ -165,12 +165,23 @@ export function checkResult(task: Task, r: AttemptResult): void {
         itemGate(task.live.target.supply,r.resolvedLive.target.supply))
         throw new CollectionError('resolved_target_mismatch');
     } else {
-      // specified 是京东「指定单品」标记，美团/淘宝闪购的任务不设该字段，不能拿它当前置条件。
+      const resolved=r.resolvedLive, mapping=resolved.mapping, actual=resolved.target.supply;
       if(!task.live || r.resolvedLive.target.id!==task.live.target.id || r.resolvedLive.quantity!==1 ||
         digest(r.resolvedLive.profile)!==digest(task.live.profile) ||
         r.resolvedLive.sourceRevision!==task.live.sourceRevision ||
-        normalize(r.resolvedLive.target.supply.item.name)!==normalize(task.live.target.supply.item.name))
+        r.resolvedLive.meal!==task.live.meal || r.resolvedLive.couponPolicy!==task.live.couponPolicy ||
+        !actual.store.name || !actual.store.address || !actual.store.city || !actual.store.brand ||
+        normalize(actual.store.city).replace(/市$/,'')!==normalize(task.live.target.supply.store.city).replace(/市$/,'') ||
+        normalize(actual.store.brand)!==normalize(task.live.target.supply.store.brand) ||
+        normalize(actual.item.name)!==normalize(task.live.target.supply.item.name) || itemGate(task.live.target.supply,actual) ||
+        !mapping || mapping.status!=='verified' || mapping.candidate.platform!==task.platform || mapping.candidate.entry!==task.entry_point ||
+        mapping.targetId!==resolved.target.id || mapping.targetRevision!==resolved.target.revision || digest(mapping.candidate.supply)!==digest(actual))
         throw new CollectionError('resolved_target_mismatch');
+      if (['success','partial'].includes(r.status)) {
+        const details=r.observation?.details, store=details?.storeEvidence, item=details?.itemEvidence;
+        if (!store || !item || store.page_stage!=='store' || item.page_stage!=='item' || store.id===item.id ||
+            !/^[a-f0-9]{64}$/.test(store.sha256) || !/^[a-f0-9]{64}$/.test(item.sha256)) throw new CollectionError('identity_evidence_unavailable');
+      }
     }
     task={...task,live:r.resolvedLive};
   }

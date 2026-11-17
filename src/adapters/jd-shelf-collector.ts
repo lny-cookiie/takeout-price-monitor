@@ -67,9 +67,16 @@ async function stage<T>(emit:StepSink|undefined,phase:string,operation:()=>Promi
   return result.value;
 }
 
+export function jdPopupClose(nodes:UiNode[]):UiNode | 'unresolved' | null {
+  if (!nodes.some(node=>node.bounds.width>0 && node.bounds.height>0 && /^(立即领取|领取优惠券|恭喜获得优惠券|稍后再说|暂不升级)$/.test(textOf(node).trim()))) return null;
+  const closes=nodes.filter(node=>node.bounds.width>0 && node.bounds.height>0 && /^(关闭|关闭弹窗|关闭浮层|暂不领取|稍后再说|暂不升级|×|✕)$/.test(textOf(node).trim()));
+  return closes.length===1?closes[0]!:'unresolved';
+}
+
 async function waitFor<T>(screen:ReviewedScreen,signal:AbortSignal,select:(nodes:UiNode[])=>T|undefined) {
   const deadline=Date.now()+(screen.source.jdShelf?.pilot ? 20_000 : 12_000);
   let lastReadOutside=false;
+  let dismissed=0;
   do {
     signal.throwIfAborted();
     let nodes:UiNode[]=[];
@@ -79,6 +86,12 @@ async function waitFor<T>(screen:ReviewedScreen,signal:AbortSignal,select:(nodes
       // wrong page ends as page_not_ready with the state budget exhausted.
       if (!(e instanceof CollectionError && e.code==='entry_mismatch')) throw e;
       lastReadOutside=true;
+    }
+    const close=jdPopupClose(nodes);
+    if (close) {
+      if (close==='unresolved' || ++dismissed>2) throw new CollectionError('popup_close_unverified','blocked');
+      await tapNode(screen,close,signal);
+      continue;
     }
     const found=select(nodes);
     if (found!==undefined) return found;
@@ -201,9 +214,11 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
   function pilotIdentity(ns:UiNode[]) {
     // 用户确认同城门店价差很小，允许搜到品牌下的任意门店；门店名必读，地址读到就记录、读不到不阻断。
     const brand=normalizeKey(input.brand);
-    const name=ns.find(node=>normalizeKey(textOf(node)).includes(brand));
+    const name=ns.find(node=>normalizeKey(textOf(node)).includes(brand) && /店[）)]?$/.test(textOf(node).trim()));
     if (!name) return undefined;
-    const address=ns.find(node=>/天津市|地址/.test(textOf(node))) ?? name;
+    const city=normalizeKey(input.city).replace(/市$/,'');
+    const address=ns.find(node=>node!==name && city.length>0 && normalizeKey(textOf(node)).includes(city) && textOf(node).trim().length>input.city.length+2);
+    if (!address) return undefined;
     const menu=screen.find({text:'外卖，未选中',className:'TextView'},ns,false);
     return {name,address,menu};
   }
@@ -227,12 +242,12 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
       await wait(1_500,undefined,{signal});
       const probe=await screen.nodes().catch(()=>[] as UiNode[]);
       if (probe.some(node=>/好运券|去使用|满\d+可用/.test(textOf(node)))) {
-        // 不能用返回键：会连门店页一起退掉。优先点“关闭”节点，找不到则点弹窗外顶部空白。
-        const viewport=await screen.device.size();
-        const close=probe.find(node=>/关闭|^[×✕]$/.test(textOf(node)) || (node.attrs['content-desc'] ?? '').includes('关闭'));
-        if (close) await tapNode(screen,close,signal);
-        else await screen.device.tap(viewport.width*.5,viewport.height*.08);
+        // 只点击唯一且明确标为关闭的控件，不能用猜测坐标关闭弹窗。
+        const closes=probe.filter(node=>/^(关闭|关闭弹窗|关闭浮层|暂不领取|×|✕)$/.test(textOf(node).trim()) || /^(关闭|关闭弹窗|关闭浮层)$/.test(String(node.attrs['content-desc'] ?? '').trim()));
+        if (closes.length!==1) throw new CollectionError('popup_close_unverified','blocked');
+        await tapNode(screen,closes[0]!,signal);
         await wait(900,undefined,{signal});
+        if ((await screen.nodes()).some(node=>/好运券|去使用|满\d+可用/.test(textOf(node)))) throw new CollectionError('popup_close_unverified','blocked');
       }
       let found=visible;
       if (!found) {
@@ -318,7 +333,9 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
       }
     }
     // u2 读首页时控件 class 可能与配置不同；任一首页特征出现即视为就绪，避免死等单一控件。
-    const ready=await screen.waitFor(['channel'],{onLaunch:true,timeoutMs:20_000}).catch(async()=>{
+    const probe=await screen.nodes(true).catch(()=>[] as UiNode[]);
+    const alreadyReady=screen.selector('home',probe,false)||screen.selector('homePoint',probe,false)||screen.selector('point',probe,false);
+    const ready=alreadyReady ? probe : await screen.waitFor([src.channel?'channel':'home'],{onLaunch:true,timeoutMs:20_000}).catch(async()=>{
       const probe=await screen.nodes(true).catch(()=>[] as UiNode[]);
       if (screen.selector('home',probe,false)||screen.selector('homePoint',probe,false)||screen.selector('point',probe,false)) return probe;
       return await screen.waitFor(['home'],{onLaunch:true,timeoutMs:10_000});
