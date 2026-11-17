@@ -1,0 +1,7 @@
+{
+  "city": "天津市",
+  "brand": "麦当劳",
+  "store": "鞍山西道",
+  "item": "板烧鸡腿堡",
+  "platforms": ["jd", "meituan", "taobao_instant"]
+}

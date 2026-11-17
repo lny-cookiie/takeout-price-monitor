@@ -18,12 +18,18 @@ const label = args.label ?? 'A';
 const groups = Number(args.groups ?? 20);
 const inputPath = args.input ?? 'scripts/bd-batch.example.json';
 const outRoot = resolve(args.dir ?? '.runtime/acceptance');
-const apiPlatform = {jd: 'jd', meituan: 'meituan', taobao: 'taobao_instant'} as const;
+const platformId = (value: string): 'jd' | 'meituan' | 'taobao_instant' | null => {
+  if (value === 'jd' || value === 'meituan') return value;
+  if (value === 'taobao' || value === 'taobao_instant') return 'taobao_instant';
+  return null;
+};
 
-type Plan = {city: string; brand: string; store?: string; item: string; platforms: ('jd' | 'meituan' | 'taobao')[]};
+type Plan = {city: string; brand: string; store?: string; item: string; platforms: string[]};
 const parsed = JSON.parse(await readFile(inputPath, 'utf8')) as Plan | Plan[];
-const plan = Array.isArray(parsed) ? parsed[0]! : parsed;
-if (!plan?.city || !plan.brand || !plan.item || !plan.platforms?.length) throw new Error('输入需要 city/brand/item/platforms');
+const raw = Array.isArray(parsed) ? parsed[0]! : parsed;
+const platforms = (raw?.platforms ?? []).map(platformId);
+if (!raw?.city || !raw.brand || !raw.item || !platforms.length || platforms.some(p => !p)) throw new Error('输入需要 city/brand/item/platforms（jd/meituan/taobao 或 taobao_instant）');
+const plan = {city: raw.city, brand: raw.brand, store: raw.store, item: raw.item, platforms: platforms as ('jd' | 'meituan' | 'taobao_instant')[]};
 if (groups < 1 || groups > 40) throw new Error('groups 需在 1-40 之间');
 
 const dir = join(outRoot, `${new Date().toISOString().replace(/[:.]/g, '-')}-${label}`);
@@ -49,7 +55,7 @@ async function adb(...cmd: string[]) {
 async function submit(requestId: string): Promise<string> {
   const res = await fetch(base + '/api/bd/runs', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({city: plan.city, brand: plan.brand, store: plan.store ?? '', item: plan.item, platforms: plan.platforms.map(p => apiPlatform[p]), requestId}),
+    body: JSON.stringify({city: plan.city, brand: plan.brand, store: plan.store ?? '', item: plan.item, platforms: plan.platforms, requestId}),
   });
   const data = await res.json() as {platforms?: {runId?: string}[]; error?: string; message?: string};
   if (!res.ok || !data.platforms?.[0]?.runId) throw new Error(data.message ?? data.error ?? 'submit_failed');
@@ -93,7 +99,7 @@ for (let round = 1; round <= groups; round++) {
   const cold = round <= 4;
   if (cold) {
     for (const platform of plan.platforms) {
-      const pkg = {jd: 'com.jingdong.app.mall', meituan: 'com.sankuai.meituan', taobao: 'com.taobao.taobao'}[platform];
+      const pkg = {jd: 'com.jingdong.app.mall', meituan: 'com.sankuai.meituan', taobao_instant: 'com.taobao.taobao'}[platform];
       await adb('shell', 'am', 'force-stop', pkg);
     }
     await delay(3_000);
@@ -106,7 +112,7 @@ for (let round = 1; round <= groups; round++) {
     const elapsedMs = Date.now() - submitAt;
     const slotRows: Record<string, unknown>[] = [];
     for (const platform of plan.platforms) {
-      const slot = details.slots.find(s => s.platform === apiPlatform[platform]);
+      const slot = details.slots.find(s => s.platform === platform);
       if (!slot) { slotRows.push({round, cold, platform, state: 'missing', quoteValid: false}); continue; }
       const evidenceOk = await verifyEvidence(slot);
       const obs = slot.observation;

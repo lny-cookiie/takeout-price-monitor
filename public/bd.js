@@ -73,9 +73,14 @@ function platformCard(platform,slot){
   const tag=valid?(obs?.detail_complete?'ok':'warn'):'bad';
   const tagText=valid?(obs?.detail_complete?'有效报价 · 明细完整':'有效报价 · 明细部分缺失'):(slot.status==='blocked'?'被安全规则拦截':'未取得报价');
   const tagSuffix=visual?' · 视觉读取':'';
+  const attempts=Array.isArray(slot.attempts)?slot.attempts:[];
+  const firstAttempt=attempts[0];
+  const attemptNote=attempts.length?`尝试 ${attempts.length} 次${firstAttempt?.status?`，首次结果 ${esc(firstAttempt.status)}`:''}${slot.quoteMs!=null?` · 报价耗时 ${(slot.quoteMs/1000).toFixed(1)} 秒`:''}`:'';
+  const failedPhase=(()=>{const steps=(attempts.at(-1)?.steps||[]);const failed=steps.filter(st=>st.state==='failed'||st.state==='blocked').at(-1);return failed?String(failed.phase||'')+(failed.errorCode?`（${failed.errorCode}）`:''):'';})();
   return `<article class="result-card" data-platform="${platform}">
     <div class="rc-head"><strong>${PLATFORMS[platform].name}</strong><span class="rc-tag ${tag}">${esc(tagText+tagSuffix)}</span></div>
     <div class="rc-amount">${valid?money(obs.amount_fen):'—'}<small>${valid?'结算应付':esc(slot.error||slot.status||slot.state||'')}</small></div>
+    ${attemptNote?`<p class="rc-note">${attemptNote}${failedPhase?` · 卡在 ${esc(failedPhase)}`:''}</p>`:''}
     <dl class="rc-meta">
       <div><dt>实际分店</dt><dd>${esc(store)}</dd></div>
       <div><dt>商品</dt><dd>${esc(slot.item||'')}${slot.spec?' · '+esc(slot.spec):''} · 1 份</dd></div>
@@ -84,6 +89,7 @@ function platformCard(platform,slot){
       <div><dt>证据</dt><dd>${refs.length?refs.map(r=>`<a href="${esc(r.screenshot)}" target="_blank" rel="noopener">结算截图</a> <a href="${esc(r.text_file)}" target="_blank" rel="noopener">证据原文</a>`).join(''):'无'}</dd></div>
     </dl>
     ${missing.length?`<details class="rc-missing"><summary>未采用或缺失的明细（${missing.length} 项）</summary><ul>${missing.map(([k,v])=>`<li>${esc(k)}：${esc(v)}</li>`).join('')}</ul></details>`:''}
+    ${(slot.quotes||[]).length?`<details class="rc-missing"><summary>历史报价（${(slot.quotes||[]).length} 次尝试）</summary><ul>${(slot.quotes||[]).map(q=>`<li>${timeText(q.observedAt)} · ${q.amountFen==null?'无金额':'¥'+(q.amountFen/100).toFixed(2)} · ${q.quoteValid?'有效':'未通过核验'}</li>`).join('')}</ul></details>`:''}
     ${detail.reconciliation?`<p class="rc-note">${esc(detail.reconciliation)}</p>`:''}
   </article>`;
 }

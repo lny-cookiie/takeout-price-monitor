@@ -560,3 +560,45 @@ test('订单幂等入库，不生成当前报价；三天计划保留全部 162 
     assert.equal(trial.stats.threePlatforms,0);
   } finally { db.close(); }
 });
+
+test('每次尝试追加报价快照，历史报价不被新尝试覆盖',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'takeout-quote-snapshot-'));
+  const store=new SqliteStore(join(dir,'snapshot.sqlite'));
+  try {
+    const now=new Date().toISOString();
+    const slot=task('jd');
+    store.createRun({id:'run',scenario:'competition',created_at:now,label:'快照测试',schedule_key:null},[slot]);
+    const insertAttempt=store.db.prepare('INSERT INTO attempts(id,slot_id,number,started_at) VALUES(?,?,?,?)');
+    insertAttempt.run('a1',slot.slot_id,1,now);
+    insertAttempt.run('a2',slot.slot_id,2,new Date(Date.parse(now)+1000).toISOString());
+    const observation=(id:string,attemptId:string,fen:number,valid:boolean,at:string)=>({
+      observation_id:id,source_id:liveSources.jd,tenant_id:TENANT,slot_id:slot.slot_id,attempt_id:attemptId,platform:'jd',store_id:supply.store.key,
+      basket_id:target.id,scenario_id:'scenario',price_kind:'checkout_payable',price_scope:'basket',currency:'CNY',amount_fen:fen,raw_value:(fen/100).toFixed(2),
+      observed_at:at,collected_at:at,quote_valid:valid,value_origin:'observed',evidence_refs:[],details:{},
+    }) as unknown as Observation;
+    store.appendQuoteSnapshot(slot.slot_id,'a1',observation('o1','a1',2160,true,now));
+    store.appendQuoteSnapshot(slot.slot_id,'a2',observation('o2','a2',2190,false,new Date(Date.parse(now)+2000).toISOString()));
+    // 同一尝试重复写入不应重复出现。
+    store.appendQuoteSnapshot(slot.slot_id,'a1',observation('o1b','a1',2160,true,now));
+    const details=new CompetitionStore(store,await AndroidSources.load(join(dir,'no-sources.json'))).runDetails('run');
+    const quotes=details?.slots[0]?.quotes ?? [];
+    assert.equal(quotes.length,2);
+    assert.deepEqual(quotes.map(q=>[q.attemptId,q.amountFen,q.quoteValid]),[['a1',2160,true],['a2',2190,false]]);
+  } finally {store.close();}
+});
+
+test('没有快照的旧任务回退到单条 observation 读取',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'takeout-quote-fallback-'));
+  const store=new SqliteStore(join(dir,'fallback.sqlite'));
+  try {
+    const now=new Date().toISOString();
+    const slot=task('jd');
+    store.createRun({id:'run',scenario:'competition',created_at:now,label:'回退测试',schedule_key:null},[slot]);
+    const legacyObservation={observation_id:'legacy',attempt_id:'old-attempt',amount_fen:2050,quote_valid:true,observed_at:now,collected_at:now,raw_value:'20.50',evidence_refs:[]};
+    store.db.prepare('UPDATE slots SET state=?, result_json=? WHERE id=?')
+      .run('completed',JSON.stringify({status:'success',cleanup:'untouched',observation:legacyObservation,evidence:null,trace:[]}),slot.slot_id);
+    const details=new CompetitionStore(store,await AndroidSources.load(join(dir,'no-sources.json'))).runDetails('run');
+    const quotes=details?.slots[0]?.quotes ?? [];
+    assert.deepEqual(quotes.map(q=>[q.attemptId,q.amountFen,q.quoteValid]),[['old-attempt',2050,true]]);
+  } finally {store.close();}
+});

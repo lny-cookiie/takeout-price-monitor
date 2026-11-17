@@ -38,6 +38,11 @@ export class SqliteStore implements CollectionStore {
       CREATE TABLE IF NOT EXISTS paused_resources(key TEXT PRIMARY KEY, code TEXT NOT NULL, paused_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS observations(id TEXT PRIMARY KEY, slot_id TEXT NOT NULL UNIQUE REFERENCES slots(id), tenant_id TEXT NOT NULL, platform TEXT NOT NULL, store_id TEXT NOT NULL, basket_id TEXT NOT NULL, scenario_id TEXT NOT NULL, origin TEXT NOT NULL, observed_at TEXT NOT NULL, amount_fen INTEGER NOT NULL CHECK(amount_fen>=0), payload TEXT NOT NULL CHECK(json_valid(payload)));
       CREATE INDEX IF NOT EXISTS observation_history ON observations(tenant_id,platform,store_id,basket_id,scenario_id,origin,observed_at);
+      -- 按尝试追加的报价格快照：原有 observations 每个槽位只保留一条，历史尝试的报价不覆盖旧记录。
+      CREATE TABLE IF NOT EXISTS quote_snapshots(id TEXT PRIMARY KEY, slot_id TEXT NOT NULL REFERENCES slots(id), attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(id),
+        platform TEXT NOT NULL, observed_at TEXT NOT NULL, amount_fen INTEGER, quote_valid INTEGER NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload)), created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS quote_snapshot_slot ON quote_snapshots(slot_id,observed_at);
+      INSERT OR IGNORE INTO migrations VALUES(5);
       CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), slot_id TEXT NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS schedules(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
     `);
@@ -133,8 +138,23 @@ export class SqliteStore implements CollectionStore {
     }
     return byAttempt;
   }
-  finish(claim: Claimed, result: AttemptResult, retryAt: string | null, following:Task[]=[]): void {
-    const { task, attempt_id: aid } = claim;
+  /** 追加一次尝试的报价快照；同一尝试只保留一条。 */
+  appendQuoteSnapshot(slotId:string, attemptId:string, o:Observation) {
+    this.db.prepare('INSERT OR IGNORE INTO quote_snapshots VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(randomUUID(),slotId,attemptId,o.platform,o.observed_at,o.amount_fen,o.quote_valid?1:0,JSON.stringify(o),new Date().toISOString());
+  }
+  /** 按槽位返回追加的报价快照（每次尝试一条），旧 observations 记录不参与这里。 */
+  quoteSnapshots(runId:string) {
+    const bySlot=new Map<string,{attemptId:string;createdAt:string;observation:Observation}[]>();
+    const rows=this.db.prepare(`SELECT q.* FROM quote_snapshots q JOIN slots s ON s.id=q.slot_id WHERE s.run_id=? ORDER BY q.observed_at`).all(runId);
+    for (const r of rows) {
+      const slotId=String(r.slot_id), list=bySlot.get(slotId) ?? [];
+      list.push({attemptId:String(r.attempt_id),createdAt:String(r.created_at),observation:json<Observation>(r.payload)});
+      bySlot.set(slotId,list);
+    }
+    return bySlot;
+  }
+  finish(claim: Claimed, result: AttemptResult, retryAt: string | null, following:Task[]=[]): void {    const { task, attempt_id: aid } = claim;
     checkResult(task,result);
     if (following.length!==(result.shelf?.selected.length ?? 0) || following.length && (!task.shelf || retryAt ||
       following.some((t,i)=>t.jdShelfParent!==task.slot_id || t.run_id!==task.run_id || t.shelf || t.jdItemKey!==result.shelf!.selected[i]?.key)))
@@ -147,6 +167,8 @@ export class SqliteStore implements CollectionStore {
       this.closeOpenSteps(aid,result.status==='blocked' ? 'blocked' : ['failed','unavailable'].includes(result.status) ? 'failed' : 'succeeded',result.error_code ?? undefined);
       const o = result.observation;
       if (o && o.attempt_id!==aid) throw new Error('observation_attempt_mismatch');
+      // 每次尝试的报价都追加快照；原有 observations 仍按槽位保留一条用于旧查询，历史尝试不覆盖旧记录。
+      if (o) this.appendQuoteSnapshot(task.slot_id,aid,o);
       if (o && o.quote_valid) {
         const previous = this.db.prepare('SELECT payload FROM observations WHERE tenant_id=? AND platform=? AND store_id=? AND basket_id=? AND scenario_id=? AND origin=? ORDER BY observed_at DESC LIMIT 1').get(TENANT,o.platform,o.store_id,o.basket_id,o.scenario_id,o.value_origin) as Row | undefined;
         this.db.prepare('INSERT INTO observations VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(o.observation_id,task.slot_id,TENANT,o.platform,o.store_id,o.basket_id,o.scenario_id,o.value_origin,o.observed_at,o.amount_fen,JSON.stringify(o));

@@ -213,7 +213,15 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
           void progress({platform: 'taobao_instant', node: '采数完成', state: 'completed'});
         } else {
           const failedStep = quote.steps.find(s => !s.ok);
-          error_code = quote.error ?? (failedStep ? `taobao_${failedStep.name.replace(/[^\w]/g, '_')}_failed` : 'taobao_no_quote');
+          // 步骤名是中文，直接拼进错误码会变成一串下划线；这里映射成稳定英文码，并保留原始步骤名。
+          const TAOBAO_STEP_CODES: Record<string, string> = {
+            '唤醒屏幕': 'wake_screen', '冷启动淘宝': 'cold_start', '进入闪购频道': 'channel_entry', '打开搜索框': 'open_searchbox',
+            '搜索品牌': 'brand_search', '进入目标门店': 'store_entry', '打开店内搜索': 'store_search', '店内搜单品': 'item_search',
+            '定位单品': 'item_locate', '加购结算': 'cart_checkout', '去结算': 'checkout', '采数完成': 'read_quote',
+          };
+          const stepCode = failedStep ? TAOBAO_STEP_CODES[failedStep.name] ?? 'step_failed' : null;
+          error_code = quote.error ?? (stepCode ? `taobao_${stepCode}_failed` : 'taobao_no_quote');
+          if (failedStep?.name) note('failed_step', failedStep.name);
           note('result', error_code);
           void progress({platform: 'taobao_instant', node: STEP_TO_PROGRESS[failedStep?.name ?? ''] ?? '采数完成', state: 'failed', message: error_code});
         }

@@ -407,6 +407,7 @@ export class CompetitionStore {
     if (!run || run.scenario!=='competition') return null;
     const {slots,attempts,events}=this.legacy.snapshot(id);
     const journal=this.legacy.attemptSteps(id);
+    const quoteHistory=this.legacy.quoteSnapshots(id);
     const state=slots.some(s=>s.state==='running') ? 'running' : slots.some(s=>s.state==='queued') ? 'queued' :
       slots.some(s=>s.state==='interrupted') ? 'interrupted' : 'completed';
     const start=Date.parse(run.created_at);
@@ -437,7 +438,16 @@ export class CompetitionStore {
             address:live.target.supply.store.address || null,user:conditions || null,delivery:live.profile.point || null,
             quantity:live.quantity,options:live.target.supply.item.options ?? []} : null,
           menuPrices:s.result?.market?.prices ?? [],menuPriceReason:s.result?.menuPriceReason ?? null,availability:s.result?.availability ?? null,
-          observation:s.result?.observation ?? null,proof:s.result?.evidence ?? null,attempts:attemptRows};
+          observation:s.result?.observation ?? null,proof:s.result?.evidence ?? null,attempts:attemptRows,
+          // 历史尝试的报价快照：新记录来自 quote_snapshots，旧任务回退到单条 observation。
+          quotes:(()=>{
+            const history=quoteHistory.get(s.task.slot_id) ?? [];
+            if(history.length)return history.map(q=>({attemptId:q.attemptId,createdAt:q.createdAt,amountFen:q.observation.amount_fen,quoteValid:q.observation.quote_valid,
+              observedAt:q.observation.observed_at,rawValue:q.observation.raw_value,evidenceRefs:q.observation.evidence_refs}));
+            const o=s.result?.observation;
+            return o?[{attemptId:o.attempt_id,createdAt:o.collected_at,amountFen:o.amount_fen,quoteValid:o.quote_valid,observedAt:o.observed_at,
+              rawValue:o.raw_value,evidenceRefs:o.evidence_refs}]:[];
+          })()};
       })};
   }
   materialize(now: Date) {
