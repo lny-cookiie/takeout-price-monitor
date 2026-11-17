@@ -223,18 +223,21 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 冷启动后的首页偶尔会自己跳回“推荐”页或弹活动层：点完闪购必须确认页面真的变了，再继续。
     let s1 = false;
     for (let i = 0; i < 3 && !s1; i++) {
-      const tapped = await tapByVision('页面顶部 tab 栏里“闪购外卖”四个字（“推荐”右侧相邻那项，黄色“闪购”+红底“外卖”）', i === 0 ? 'flash-tab' : `flash-tab-${i + 1}`, {yMin: Math.round(H*0.04), yMax: Math.round(H*0.11), cropTopRatio: 0.02, cropBottomRatio: 0.13}, 1);
+      const tapped = await tapByVision('文字“闪购”', i === 0 ? 'flash-tab' : `flash-tab-${i + 1}`, {yMin: Math.round(H*0.04), yMax: Math.round(H*0.11), cropTopRatio: 0.02, cropBottomRatio: 0.13}, 1);
       if (!tapped) continue;
       await sleep(1_800);
       const lines = await readCropLines(`flash-check-${i + 1}`, 0, 0.30).catch(() => [] as string[]);
       s1 = lines.some(l => /闪购/.test(l) && /外卖|超值|送到家/.test(l));
-      if (!s1) log(`  [flash-tab] 第${i + 1}次点击后仍未进入闪购频道，重试`);
+      if (!s1) {
+        try { const {writeFile} = await import('node:fs/promises'); await writeFile(`.runtime/tb-flash-fail-${i + 1}.png`, await snap(`flash-dbg-${i + 1}`)); } catch { /* 诊断 */ }
+        log(`  [flash-tab] 第${i + 1}次点击后仍未进入闪购频道，重试；顶部行：${lines.slice(0, 6).join(' / ')}`);
+      }
     }
     mark('进入闪购频道', s1);
     if (!s1) return {store: null, item: null, originalFen: null, discountFen: null, packagingFen: null, deliveryFen: null, redPacketFen: null, totalFen: null, steps, rawText: null};
 
     // 2 闪购频道页 → 搜索框
-    const s2 = await tapByVision('闪购频道页最上方的搜索输入框（左侧“闪购▾”，中间是推荐词，右侧橙色“搜索”按钮）', 'searchbox', {yMin: Math.round(H*0.08), yMax: Math.round(H*0.16), cropTopRatio: 0.06, cropBottomRatio: 0.18});
+    const s2 = await tapByVision('页面顶部的搜索输入框', 'searchbox', {yMin: Math.round(H*0.08), yMax: Math.round(H*0.16), cropTopRatio: 0.06, cropBottomRatio: 0.18});
     mark('打开搜索框', s2);
 
     // 3 输入品牌并搜索
@@ -273,7 +276,7 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     }
     if (s2 && !s3) {
       log('  [results] 回车未进入结果页，改点橙色搜索按钮');
-      const tapped = await tapByVision('页面顶部橙色底、白色“搜索”两个字的按钮', 'brand-search', {yMin: Math.round(H*0.04), yMax: Math.round(H*0.13), cropTopRatio: 0.03, cropBottomRatio: 0.15});
+      const tapped = await tapByVision('橙色底白色“搜索”按钮', 'brand-search', {yMin: Math.round(H*0.04), yMax: Math.round(H*0.13), cropTopRatio: 0.03, cropBottomRatio: 0.15});
       if (tapped) {
         await sleep(2_200);
         try { s3 = looksLikeResults((await readLines('results-check-2')).lines); } catch (error) { log('  [results] 第二次读取失败：' + (error as Error).message); }
@@ -287,9 +290,10 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 页面顶部搜索框里也写着“麦当劳”，实测模型会直接点搜索框（y≈0.12H）；
     // 也不要用商品图，卡片下方横向商品列表里同样有“板烧鸡腿堡”和价格（y≈0.70H）。
     // 只有门店卡片同时具备“月售 / 评分 / 起送 / 商家自配送”这些字。
+    // 离线复现结论：给 2B 定位模型的提示词越长越容易卡满 60 秒超时；短文字锚点约 2 秒返回。
     const storeHint = o.storeKeyword
-      ? `搜索结果列表里的门店卡片：卡片上同时有门店评分（如“4.5分”）和“月售”字样，门店名称包含“${o.storeKeyword}”；点这张卡片里门店名称那一行（它在页面顶部搜索框下方、「综合/销量/速度」排序栏下面；不要点最顶部的搜索框，也不要点卡片下方的汉堡商品图）`
-      : '搜索结果列表里第一张门店卡片：卡片上同时有门店评分（如“4.5分”）和“月售”字样；点这张卡片里门店名称那一行（它在页面顶部搜索框下方、「综合/销量/速度」排序栏下面；不要点最顶部的搜索框，也不要点卡片下方的汉堡商品图）';
+      ? `文字“${o.storeKeyword}”所在的门店名称那一行`
+      : `列表里“${brand}”门店名称那一行`;
     // 关键：把视野收窄到「门店卡标题区」这一段（相对高度 26%~58%）。
     // 上界 26% 排掉顶部搜索框与“超抢手”广告位；下界 58% 排掉门店卡下方的横向商品图区
     // （那里也有“板烧鸡腿堡”和价格，实测模型会被吸过去，给出 y≈0.70H 的错误坐标）。
@@ -360,13 +364,13 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
       await adb(['shell', 'input', 'swipe', String(Math.round(W / 2)), String(Math.round(H * 0.62)), String(Math.round(W / 2)), String(Math.round(H * 0.28)), '420']);
       await sleep(2600);
     }
-    const s5 = s4 && await tapByVision('页面顶部灰色圆角搜索输入框（占位文字“搜一搜”，右侧有放大镜图标）', 'shopsearch', {yMin: Math.round(H*0.02), yMax: Math.round(H*0.16), cropTopRatio: 0.01, cropBottomRatio: 0.18});
+    const s5 = s4 && await tapByVision('文字“搜一搜”的搜索框', 'shopsearch', {yMin: Math.round(H*0.02), yMax: Math.round(H*0.16), cropTopRatio: 0.01, cropBottomRatio: 0.18});
     mark('打开店内搜索', !!s5);
 
     // 6 店内搜单品
     const typedItem = s5 && await typeChinese(itemName);
     await sleep(1800);
-    const s6 = s5 && await tapByVision('页面顶部或右上角橙色底、白色“搜索”两个字的按钮', 'item-search', {yMin: Math.round(H*0.02), yMax: Math.round(H*0.19), cropTopRatio: 0.01, cropBottomRatio: 0.21});
+    const s6 = s5 && await tapByVision('橙色底白色“搜索”按钮', 'item-search', {yMin: Math.round(H*0.02), yMax: Math.round(H*0.19), cropTopRatio: 0.01, cropBottomRatio: 0.21});
     mark('店内搜单品', !!s6, `${itemName} 注入=${typedItem}`);
 
     // 7 点目标单品加号。用标定的相对比例坐标。
@@ -389,7 +393,7 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
       // 提示词必须用「视觉形状」区分，而不是靠模型理解“不要套餐”：
       // 套餐行的最右侧是红色矩形“选套餐”按钮，单点商品行的最右侧才是橙色圆形“+”。
       // 2B 模型只靠否定式描述会照样点“选套餐”（实测点到了第一行三件套的选套餐）。
-      const addHint = `搜索结果列表里，最右侧是“橙色圆形 + 号按钮”的那一行（不是红色矩形“选套餐”按钮的那些行）；这一行的商品标题是“${itemName}”。点这个橙色圆形的 + 号`;
+      const addHint = '最上方的橙色圆形“+”按钮';
       // 横向也收紧到右侧 72% 之后：加号固定在商品行最右端，
       // 不收横向时模型会点到左侧商品图（实测点到 x≈0.43W 的图片上，进而跳详情页多加购）。
       // 纵向下界压到 60%：软键盘从约 65% 处弹出，商品行在其上方。
@@ -411,7 +415,7 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     if (s7) {
       const afterItem=await readNodes();
       if (cartIsExplicitlyEmpty(afterItem)) {
-        s8=await tapByVision('页面右下角深红色矩形“加入购物车”按钮', 'addcart',
+        s8=await tapByVision('“加入购物车”按钮', 'addcart',
           {yMin: Math.round(H * 0.40), yMax: Math.round(H * 0.68), cropTopRatio: 0.36, cropBottomRatio: 0.72}, 1);
       } else if (observedSingleBasket(afterItem,itemName,o.itemSpec) || ownedCartRemoveControl(afterItem,itemName,o.itemSpec)) s8=true;
       else throw new Error('taobao_cart_state_unverified');
@@ -420,7 +424,7 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     await sleep(2200);
 
     // 9 去结算
-    const s9 = s8 && await tapByVision('页面底部购物车栏最右侧那个红色“去结算”按钮', 'checkout', {yMin: Math.round(H * 0.85), yMax: H - 10, cropTopRatio: 0.80, cropBottomRatio: 1});
+    const s9 = s8 && await tapByVision('“去结算”按钮', 'checkout', {yMin: Math.round(H * 0.85), yMax: H - 10, cropTopRatio: 0.80, cropBottomRatio: 1});
     mark('去结算', !!s9);
     await sleep(5000);
 
