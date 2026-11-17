@@ -19,7 +19,7 @@ export interface MeituanCollectorOptions {
   sources: AndroidSources;
   /** 测试注入：读取当前页面全部可见文字的兜底实现（默认用 uiautomator dump）。 */
   cartBarTexts?: () => Promise<string[]>;
-  model: Pick<ModelGateway, 'status' | 'locate' | 'json'>;
+  model: Pick<ModelGateway, 'status' | 'locate' | 'json' | 'text'>;
   evidence: EvidenceStore;
   connect?: typeof connectAndroid;
   navigate?: typeof navigateMeituan;
@@ -56,38 +56,45 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
       let actualItem: ReturnType<typeof observedItem> = null;
       let verifiedLive: AttemptResult['resolvedLive'];
 
-      // 美团底栏（购物车状态）不在 u2 可访问性树里；用系统 uiautomator 全量 dump 取文字。
-      const dumpTexts = async (): Promise<string[]> => {
-        if (opts.cartBarTexts) return opts.cartBarTexts();
+      // 美团底栏（购物车状态）不在 u2 可访问性树里，uiautomator dump 又会因为页面动画报“could not get idle state”。
+      // 改为截取屏幕底部 10% 的购物车栏，让本地模型逐行读文字（离线实测 1 秒左右、准确）：
+      // 空车显示“¥20起送/预估加配送费”，有商品显示“到手约/共减/去结算”。
+      let deviceRef: Awaited<ReturnType<typeof connectAndroid>> | null = null;
+      const adbShell = async (args: string[]) => {
         const {execFile} = await import('node:child_process');
         const {promisify} = await import('node:util');
         const run = promisify(execFile);
         const adb = process.env.MIDSCENE_ADB_PATH ?? 'adb';
-        const file = '/sdcard/_takeout_state.xml';
-        // u2 读屏服务会占住 uiautomator，导致 dump 静默失败；dump 前先停 u2，读完语义层会自动重启 u2。
-        await run(adb, ['-s', source.device, 'shell', 'pkill', '-f', 'com.wetest.uia2'], {timeout: 8_000, windowsHide: true}).catch(() => null);
-        await new Promise(r => setTimeout(r, 1_000));
-        await run(adb, ['-s', source.device, 'shell', 'rm', '-f', file], {timeout: 8_000, windowsHide: true}).catch(() => null);
-        await run(adb, ['-s', source.device, 'shell', 'uiautomator', 'dump', '--compressed', file], {timeout: 25_000, windowsHide: true}).catch(() => null);
-        const {stdout} = await run(adb, ['-s', source.device, 'shell', 'cat', file], {timeout: 20_000, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024, windowsHide: true}).catch(() => ({stdout: ''}));
-        return [...stdout.matchAll(/(?:text|content-desc)="([^"]*)"/g)].map(m => m[1]!).filter(Boolean);
+        return run(adb, ['-s', source.device, ...args], {timeout: 20_000, windowsHide: true, encoding: 'utf8'}).catch(() => ({stdout: ''}));
       };
       const cartBarState = async () => {
-        let texts: string[] = [];
-        // 页面切换动画期间 uiautomator dump 会失败或返回空，重试几次再下结论，不能把“没读到”当成空车。
-        for (let attempt = 0; attempt < 3; attempt++) {
-          texts = await dumpTexts();
-          if (texts.length > 5) break;
-          await new Promise(r => setTimeout(r, 900));
+        if (opts.cartBarTexts) {
+          const texts = await opts.cartBarTexts();
+          const hasMin = texts.some(t => /起送/.test(t));
+          const hasContent = texts.some(t => /到手约|共减|去结算/.test(t));
+          return {empty: hasMin && !hasContent, lines: texts, hasMin, hasContent};
         }
-        const hasMin = texts.some(t => /起送/.test(t));
-        const hasContent = texts.some(t => /到手约|共减|去结算|已加购商品/.test(t));
-        return {empty: hasMin && !hasContent, hasMin, hasContent, nodes: texts.length, sample: texts.filter(t => /起送|到手约|共减|去结算/.test(t)).slice(0, 6)};
+        const png = await deviceRef!.screenshot(signal);
+        const meta = await sharp(png).metadata();
+        const width = meta.width ?? 0, height = meta.height ?? 0;
+        if (!width || !height) throw new Error('screen_geometry_unknown');
+        const top = Math.round(height * 0.90);
+        const band = await sharp(png).extract({left: 0, top, width, height: height - top}).resize({width: 900}).png().toBuffer();
+        try { const {writeFile} = await import('node:fs/promises'); await writeFile('.runtime/mt-cart-bar-dbg.png', band); await writeFile('.runtime/mt-cart-full-dbg.png', png); } catch { /* 诊断 */ }
+        console.log('[meituan] 购物车栏截图尺寸', width, height, '裁剪 top', top);
+        const content = await opts.model.text('meituan', 'meituan_cart_bar',
+          '把这张截图里的可见文字按行原样输出，最多 6 行；不要编号、不要总结、不要判断。',
+          {image: band, signal, maxTokens: 200});
+        const lines = content.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+        const hasMin = lines.some(line => /起送/.test(line));
+        const hasContent = lines.some(line => /到手约|共减|去结算/.test(line));
+        return {empty: hasMin && !hasContent, lines, hasMin, hasContent};
       };
 
       try {
         emit?.({phase: 'connect', state: 'started'});
         const device = await (opts.connect ?? connectAndroid)(source, signal);
+        deviceRef = device;
         note('connect', '已连接设备');
         emit?.({phase: 'connect', state: 'succeeded'});
 
@@ -174,6 +181,9 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
               }
               actualStore={name:named.name,address,nodes:[named.node]};
             }
+            // 点菜页如果停在上次的滚动位置，底部购物车栏会被隐藏（真机截图确认）；先滑回顶部再读取门店证据和购物车状态。
+            await adbShell(['shell', 'input', 'swipe', String(Math.round(physical.width / 2)), String(Math.round(physical.height * 0.30)), String(Math.round(physical.width / 2)), String(Math.round(physical.height * 0.85)), '420']);
+            await new Promise(r => setTimeout(r, 900));
             storeProof=await captureNodes(actualStore.nodes,'store');
             // 美团门店页底部的购物车栏不在 u2 可访问性树里（u2 读不到“起送/到手约”），
             // 但系统 uiautomator 全量 dump 能读到，因此用 dump 判断空车：有“起送”且没有“到手约/共减/去结算”。

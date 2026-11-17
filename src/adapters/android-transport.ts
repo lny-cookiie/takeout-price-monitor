@@ -13,13 +13,19 @@ export async function requireAndroidForeground(shell:()=>Promise<string>,target:
   // 页面切换瞬间 dumpsys 可能短暂报告桌面、null 或系统弹层；重试几次再判定，
   // 避免把过渡态误判成“目标 App 不在前台”而中断整次采集。
   let lastComponent: string | undefined;
-  for(let attempt=0;attempt<3;attempt++){
+  // 冷启动/切换页面的几秒内，dumpsys 可能完全没有 mCurrentFocus（前台窗口还没建立），
+  // 这属于过渡态而不是“应用不在前台”，多等几轮再判定；一旦明确读到别的应用在前台，立即停止。
+  for(let attempt=0;attempt<6;attempt++){
     signal.throwIfAborted();
     const dump=await shell(),line=dump.split(/\r?\n/).find(value=>/mCurrentFocus=Window/.test(value));
     const component=line?/[a-zA-Z][\w.]*(?:\.[\w.]+)+\/[\w.$]+/.exec(line)?.[0]:undefined;
     lastComponent=component;
     if(component?.split('/')[0]===target)return;
-    if(attempt<2)await wait(400,undefined,{signal});
+    if(component)throw new CollectionError('target_app_not_foreground','blocked');
+    if(attempt<5){
+      try{ await wait(700,undefined,{signal}); }
+      catch{ throw new CollectionError('foreground_state_unknown','blocked'); }
+    }
   }
   if(lastComponent)throw new CollectionError('target_app_not_foreground','blocked');
   throw new CollectionError('foreground_state_unknown','blocked');
