@@ -60,6 +60,8 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
       // 改为截取屏幕底部 10% 的购物车栏，让本地模型逐行读文字（离线实测 1 秒左右、准确）：
       // 空车显示“¥20起送/预估加配送费”，有商品显示“到手约/共减/去结算”。
       let deviceRef: Awaited<ReturnType<typeof connectAndroid>> | null = null;
+      let visualLocateRef: ((hint: string) => Promise<{x: number; y: number} | null>) | null = null;
+      let tapPointRef: ((x: number, y: number) => Promise<void>) | null = null;
       const adbShell = async (args: string[]) => {
         const {execFile} = await import('node:child_process');
         const {promisify} = await import('node:util');
@@ -129,6 +131,8 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
           return {x: px / physical.width * logical.width, y: py / physical.height * logical.height};
         };
         const tapPoint = (x: number, y: number) => device.tap(x, y);
+        visualLocateRef = visualLocate;
+        tapPointRef = tapPoint;
         semantic = (opts.semantic ?? createU2Semantic)({
           serial: source.device,
           tapPoint,
@@ -185,11 +189,31 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
             await adbShell(['shell', 'input', 'swipe', String(Math.round(physical.width / 2)), String(Math.round(physical.height * 0.30)), String(Math.round(physical.width / 2)), String(Math.round(physical.height * 0.85)), '420']);
             await new Promise(r => setTimeout(r, 900));
             storeProof=await captureNodes(actualStore.nodes,'store');
-            // 美团门店页底部的购物车栏不在 u2 可访问性树里（u2 读不到“起送/到手约”），
-            // 但系统 uiautomator 全量 dump 能读到，因此用 dump 判断空车：有“起送”且没有“到手约/共减/去结算”。
-            const barState=await cartBarState();
-            console.log('[meituan] 购物车栏状态', JSON.stringify(barState));
-            cartEmptyPrecheck=barState.empty;
+            // 当前美团版本的门店页不渲染底部购物车栏（真机四张整屏截图确认）。改为：
+            // 打开右上角“…”菜单 → 购物车。若目标店购物车有商品，购物车页会按门店分组列出该店；
+            // 若整页没有目标门店名，则目标店购物车为空。判断依据保存为文字记录，不保存含用户其他商品的截图。
+            const moreBtn=await semantic!.find(n=>/更多|更多选项/.test(nodeLabel(n)),1_500).catch(()=>null);
+            if(moreBtn){ await semantic!.tap(moreBtn,'更多菜单'); }
+            else {
+              const hit=await visualLocate('顶部右侧的“…”按钮').catch(()=>null);
+              if(!hit) throw new Error('cart_entry_missing');
+              await tapPoint(hit.x,hit.y);
+            }
+            await new Promise(r=>setTimeout(r,1_200));
+            const cartEntry=await semantic!.find(n=>nodeLabel(n).trim()==='购物车',3_000).catch(()=>null);
+            if(!cartEntry) throw new Error('cart_entry_missing');
+            await semantic!.tap(cartEntry,'购物车入口');
+            await semantic!.waitStable(4);
+            const cartNodes=await semantic!.read();
+            const cartLabels=cartNodes.map(n=>nodeLabel(n).trim()).filter(Boolean);
+            const targetListed=cartLabels.some(l=>l.includes(brand)&&/店/.test(l));
+            const cartTitleOk=cartLabels.some(l=>l==='购物车');
+            console.log('[meituan] 购物车页检查', JSON.stringify({targetListed, cartTitleOk, sample: cartLabels.filter(l=>/麦当劳|购物车|全选|去结算/.test(l)).slice(0,10)}));
+            note('cart_precheck', targetListed ? '购物车页出现目标门店，判定非空' : '购物车页未出现目标门店，判定目标店空车');
+            await semantic!.back();
+            await semantic!.waitStable(3);
+            if(!cartTitleOk) throw new Error('cart_page_unverified');
+            cartEmptyPrecheck=!targetListed;
             if(!cartEmptyPrecheck) throw new Error('cart_preflight_unverified');
           },
           onCartMutation: async () => {
@@ -226,34 +250,124 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
 
         // 读结算页
         emit?.({phase: 'checkout', state: 'started'});
+        try {
+          const {writeFile} = await import('node:fs/promises');
+          await writeFile('.runtime/mt-checkout-page.png', await device.screenshot(signal));
+          const probe = await semantic.read().catch(() => [] as U2Node[]);
+          console.log('[meituan] 结算页节点样例', JSON.stringify(probe.slice(0, 18).map(n => nodeLabel(n).trim()).filter(Boolean)));
+        } catch { /* 诊断 */ }
+        let totalFen: number | null = null;
+        let feeSubtotal: number | null = null, feePackaging: number | null = null, feeDelivery: number | null = null, feeDiscount: number | null = null;
+        let reconciled = false;
         let quote: ReturnType<typeof readMeituanSettlement> | null = null;
         let checkoutNodes:U2Node[]=[];
-        for (let i = 0; i < 20 && !quote?.raw?.['券前']; i++) {
-          await new Promise(r => setTimeout(r, 1000));
+        for (let i = 0; i < 12 && !quote?.raw?.['券前']; i++) {
+          await new Promise(r => setTimeout(r, 800));
           const nodes = await semantic.read().catch(() => []);
           if (!nodes.length) continue;
           const parsed = readMeituanSettlement(nodes);
           if (parsed.raw?.['券前']) { quote = parsed; checkoutNodes=nodes; }
         }
-        if (!quote) throw new Error('meituan_no_checkout');
-        if (!observedSingleBasket(checkoutNodes,itemName,live.target.supply.item.spec ?? '')) throw new Error('meituan_checkout_item_unverified');
-        // 商品身份以结算页的同一购物篮为准：单据上唯一的商品名+规格+1 件，比在列表页猜更可靠。
-        if (!actualItem) {
-          actualItem=observedItem(checkoutNodes,itemName,live.target.supply.item.spec ?? '');
-          if(!actualItem) throw new Error('meituan_item_unverified');
-          itemProof=await captureNodes(actualItem.nodes,'item');
+        if (quote && checkoutNodes.length >= 5 && quote.payable_fen != null) {
+          // 读屏可用的结算页：沿用节点核对与“实付金额二次读取”。
+          if (!observedSingleBasket(checkoutNodes,itemName,live.target.supply.item.spec ?? '')) throw new Error('meituan_checkout_item_unverified');
+          if (!actualItem) {
+            actualItem=observedItem(checkoutNodes,itemName,live.target.supply.item.spec ?? '');
+            if(!actualItem) throw new Error('meituan_item_unverified');
+            itemProof=await captureNodes(actualItem.nodes,'item');
+          }
+          const payableNodes=payableEvidenceNodes(checkoutNodes,quote.raw);
+          if (!payableNodes) throw new Error('meituan_payable_unverified');
+          evidence=await captureNodes(payableNodes,'checkout');
+          const checkoutShot=await opts.evidence.read(evidence.id,'png');
+          const verify=await opts.model.json<{value:string}>('meituan','meituan_checkout_verify',
+            '读取实付或合计标签旁明确显示的金额，只输出金额；未看到则输出空字符串。',{},v=>v as {value:string},
+            {image:checkoutShot,signal,schema:{type:'object',properties:{value:{type:'string'}},required:['value'],additionalProperties:false}});
+          const matched=/^\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?)\s*$/.exec(verify.value ?? '');
+          if (!matched || Math.round(Number(matched[1])*100)!==quote.payable_fen) throw new Error('meituan_payable_mismatch');
+          totalFen=quote.payable_fen;
+          const rawOf=(key:string)=>{const v=quote!.raw?.[key]; const m=typeof v==='string'?/(\d+(?:\.\d{1,2})?)/.exec(v):null; return m?Math.round(Number(m[1])*100):null;};
+          feeSubtotal=rawOf('商品原价')??rawOf('商品金额');
+          feePackaging=rawOf('打包费');
+          feeDelivery=rawOf('配送费')??rawOf('用户配送费');
+          feeDiscount=rawOf('红包')??rawOf('优惠');
+        } else {
+          // 结算页是 WebView 自绘，读屏为空（真机确认）：用整页截图读文字，金额读两次必须一致，再做费用加减核对。
+          const readLines = async (tag: string) => {
+            const png = await device.screenshot(signal);
+            const content = await opts.model.text('meituan', 'meituan_checkout_lines',
+              '把这张截图里所有可见文字按行原样输出，最多 30 行；金额、商品名、门店名、费用名按原样保留；不要总结、不要判断。',
+              {image: png, signal, maxImageWidth: 900, maxTokens: 800});
+            return {lines: content.split(/\r?\n/).map(v => v.trim()).filter(Boolean), png};
+          };
+          const firstRead = await readLines('checkout-read-1');
+          const secondRead = await readLines('checkout-read-2');
+          const redact = (line: string) => line.replace(/\d{11}/g, '***').replace(/(公寓|小区|单元|宿舍|号楼|栋|室)\S*/g, '***');
+          const isPersonal = (line: string) => /\d{11}/.test(line) || /(公寓|小区|单元|宿舍|号楼|栋|室)/.test(line);
+          const safeLines = (lines: string[]) => lines.filter(v => !isPersonal(v)).map(redact);
+          console.log('[meituan] 结算页可见行1', JSON.stringify(safeLines(firstRead.lines).slice(0, 18)));
+          const amountFrom = (lines: string[]) => {
+            for (const key of ['立即支付', '实付', '应付', '合计', '券前']) {
+              for (const line of lines) {
+                if (!line.includes(key)) continue;
+                const m = /[¥￥]?\s*(\d+(?:\.\d{1,2})?)/.exec(line.replace(/[¥￥]/g, ' '));
+                if (m) return Math.round(Number(m[1]) * 100);
+              }
+            }
+            return null;
+          };
+          const payable = amountFrom(firstRead.lines), payable2 = amountFrom(secondRead.lines);
+          if (payable == null || payable2 == null || payable !== payable2) throw new Error('meituan_payable_unverified');
+          const feeNear = (label: string) => {
+            for (const lines of [firstRead.lines, secondRead.lines]) {
+              const idx = lines.findIndex(line => line.includes(label));
+              if (idx < 0) continue;
+              for (const line of lines.slice(idx, idx + 3)) {
+                const m = /[¥￥]\s*(\d+(?:\.\d{1,2})?)/.exec(line);
+                if (m) return Math.round(Number(m[1]) * 100);
+              }
+              const after = lines[idx + 1];
+              const bare = after ? /^[¥￥]?\s*(\d+(?:\.\d{1,2})?)\s*$/.exec(after) : null;
+              if (bare) return Math.round(Number(bare[1]) * 100);
+            }
+            return null;
+          };
+          feeSubtotal = feeNear('商品原价');
+          feePackaging = feeNear('打包费');
+          feeDelivery = feeNear('用户配送费') ?? feeNear('配送费');
+          // 优惠金额必须取“共减/红包”关键字后面的数字；直接找行内第一个金额会把“券前 ¥33.59”当成优惠。
+          const discountFrom = (lines: string[]) => {
+            for (const line of lines) {
+              const m = /共减\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?)/.exec(line) ?? /红包[^\d¥￥]{0,6}[¥￥]?\s*(\d+(?:\.\d{1,2})?)/.exec(line);
+              if (m) return Math.round(Number(m[1]) * 100);
+            }
+            return null;
+          };
+          feeDiscount = discountFrom(firstRead.lines) ?? discountFrom(secondRead.lines);
+          reconciled = [feeSubtotal, feePackaging, feeDelivery, feeDiscount].every(v => v != null) &&
+            (feeSubtotal! + feePackaging! + feeDelivery! - feeDiscount!) === payable;
+          console.log('[meituan] 结算页费用核对', JSON.stringify({feeSubtotal, feePackaging, feeDelivery, feeDiscount, payable, reconciled}));
+          if (!reconciled) throw new Error('meituan_reconciliation_failed');
+          totalFen = payable;
+          const storeLine = firstRead.lines.find(line => line.includes(brand) && /店/.test(line)) ?? null;
+          const itemLine = firstRead.lines.find(line => line.trim() === itemName) ?? null;
+          const quantityLine = firstRead.lines.find(line => /^(×|x)\s*1$|^x1$/i.test(line.trim())) ?? null;
+          if (!storeLine) throw new Error('meituan_identity_unverified');
+          if (!itemLine || !quantityLine) throw new Error('meituan_checkout_item_unverified');
+          const knownStoreAddress = (actualStore as {address?: string} | null)?.address ?? '';
+          if (!actualStore) actualStore = {name: storeLine, address: knownStoreAddress, nodes: []};
+          if (!actualItem) actualItem = {name: itemLine, spec: live.target.supply.item.spec ?? '', nodes: []};
+          console.log('[meituan] 结算后身份', JSON.stringify({store: actualStore, item: actualItem, totalFen, reconciled}));
+          // 证据：整页顶部 24% 涂黑（收货地址/收件人/电话），保留门店、商品、费用和金额。
+          const floor = Math.round(physical.height * 0.24);
+          const maskedPng = await sharp(firstRead.png).composite([{input: await sharp({create: {width: physical.width, height: floor, channels: 3, background: '#121719'}}).png().toBuffer(), left: 0, top: 0}]).png().toBuffer();
+          evidence = await opts.evidence.save(randomUUID(), 'checkout', maskedPng, safeLines(firstRead.lines).join('\n'), 'live');
+          // 商品证据：结算页商品行区域（在地址块下方），单独存证。
+          const itemTop = Math.round(physical.height * 0.26), itemH = Math.round(physical.height * 0.14);
+          const itemBand = await sharp(firstRead.png).extract({left: 0, top: itemTop, width: physical.width, height: itemH}).png().toBuffer();
+          const bandText = await opts.model.text('meituan', 'meituan_item_band', '把这张截图里的可见文字按行原样输出，最多 8 行；不要编号、不要总结。', {image: itemBand, signal, maxImageWidth: 900, maxTokens: 300}).catch(() => '');
+          itemProof = await opts.evidence.save(randomUUID(), 'item', itemBand, bandText.split(/\r?\n/).filter(Boolean).slice(0, 8).join('\n'), 'live');
         }
-        // 只截取已识别的“实付”标签与金额节点，避免将配送地址发送给模型。
-        const payableNodes=payableEvidenceNodes(checkoutNodes,quote.raw);
-        if (!payableNodes || quote.payable_fen==null) throw new Error('meituan_payable_unverified');
-        evidence=await captureNodes(payableNodes,'checkout');
-        const checkoutShot=await opts.evidence.read(evidence.id,'png');
-        const verify=await opts.model.json<{value:string}>('meituan','meituan_checkout_verify',
-          '读取实付或合计标签旁明确显示的金额，只输出金额；未看到则输出空字符串。',{},v=>v as {value:string},
-          {image:checkoutShot,signal,schema:{type:'object',properties:{value:{type:'string'}},required:['value'],additionalProperties:false}});
-        const matched=/^\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?)\s*$/.exec(verify.value ?? '');
-        if (!matched || Math.round(Number(matched[1])*100)!==quote.payable_fen) throw new Error('meituan_payable_mismatch');
-        const totalFen=quote.payable_fen;
         const verifiedStoreProof=storeProof as Evidence|null, verifiedItemProof=itemProof as Evidence|null;
         if (!actualStore || !actualItem || !verifiedStoreProof || !verifiedItemProof) throw new Error('meituan_identity_unverified');
         const identity=actualStore as NonNullable<typeof actualStore>, observed=actualItem as NonNullable<typeof actualItem>;
@@ -272,36 +386,36 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
           slot_id: task.slot_id, attempt_id: attemptId, platform: 'meituan',
           store_id: task.store_id, basket_id: task.basket_id, scenario_id: task.scenario_id,
           price_kind: 'checkout_payable', price_scope: 'basket', currency: 'CNY',
-          amount_fen: totalFen, raw_value: `¥${(totalFen / 100).toFixed(2)}`,
+          amount_fen: totalFen!, raw_value: `¥${(totalFen! / 100).toFixed(2)}`,
           components: {
-            delivery_fee: {amount_fen: null, raw_value: null, basis: 'unknown', included_in: null},
-            packaging_fee: {amount_fen: null, raw_value: null, basis: 'unknown', included_in: null},
+            delivery_fee: {amount_fen: feeDelivery, raw_value: feeDelivery == null ? null : String(feeDelivery / 100), basis: feeDelivery == null ? 'unknown' : 'separately_displayed', included_in: feeDelivery == null ? null : 'checkout_payable'},
+            packaging_fee: {amount_fen: feePackaging, raw_value: feePackaging == null ? null : String(feePackaging / 100), basis: feePackaging == null ? 'unknown' : 'separately_displayed', included_in: feePackaging == null ? null : 'checkout_payable'},
           },
           missing_reasons: {
-            delivery_fee: 'not_verified',
-            packaging_fee: 'not_verified',
+            ...(feeDelivery == null ? {delivery_fee: 'not_verified'} : {}),
+            ...(feePackaging == null ? {packaging_fee: 'not_verified'} : {}),
           },
           observed_at: new Date().toISOString(), collected_at: new Date().toISOString(),
           value_origin: 'observed', quote_valid: true,
-          detail_complete: false,
+          detail_complete: reconciled,
           basket_items: [{product_id: live.target.id, name: observed.name, variant: observed.spec, quantity: 1}],
           account_ref: task.account_ref, delivery_point_id: task.delivery_point_id, entry_point: task.entry_point,
           evidence_refs: [evidence],
           contract_version: task.contract_version, collector_version: 'meituan-0.2.0',
           details: {
             components: {
-              subtotal: null,
-              packaging: null,
-              delivery: null,
+              subtotal: feeSubtotal == null ? null : {raw: `¥${(feeSubtotal / 100).toFixed(2)}`, fen: feeSubtotal, evidence: evidence as Evidence},
+              packaging: feePackaging == null ? null : {raw: `¥${(feePackaging / 100).toFixed(2)}`, fen: feePackaging, evidence: evidence as Evidence},
+              delivery: feeDelivery == null ? null : {raw: `¥${(feeDelivery / 100).toFixed(2)}`, fen: feeDelivery, evidence: evidence as Evidence},
               other: null,
-              discount: null,
+              discount: feeDiscount == null ? null : {raw: `¥${(feeDiscount / 100).toFixed(2)}`, fen: feeDiscount, evidence: evidence as Evidence},
             },
-            subtotalBasis: 'unknown',
-            feesSeparate: null,
+            subtotalBasis: reconciled ? 'before_discount' : 'unknown',
+            feesSeparate: reconciled ? true : null,
             eta: null,
             coupons: null,
             missing: identity.address ? {} : {store_address: '商家页未读到营业地址，本次只按唯一门店名核对实际分店'},
-            reconciled: false,
+            reconciled,
             contextEvidence: evidence,
             storeEvidence: verifiedStoreProof,
             itemEvidence: verifiedItemProof,
@@ -317,7 +431,7 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
         note('identity','已读取实际门店和规格');
         verifiedLive=resolvedLive;
         availability = 'available';
-        emit?.({phase: 'checkout', state: 'succeeded', data: {amountFen: totalFen, components: quote.raw}});
+        emit?.({phase: 'checkout', state: 'succeeded', data: {amountFen: totalFen, components: feeSubtotal != null ? {subtotal: feeSubtotal} : undefined}});
       } catch (e) {
         error_code = (e as Error).message.slice(0, 120);
         emit?.({phase: 'checkout', state: 'failed', errorCode: error_code});
@@ -326,18 +440,19 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
 
       if (cartMayHaveChanged && semantic) {
         try {
+          // 恢复只撤销本次加购：从结算页退回商品详情页，点数量控件里的黄色减号，直到底部购物车栏回到空车状态。
           await semantic.back();
-          await semantic.waitStable(3);
-          const state=await cartBarState();
-          if (state.empty) cleanup='restored';
-          else {
-            const remove=ownedCartRemoveControl(await semantic.read(),itemName,live.target.supply.item.spec ?? '');
-            if (remove) {
-              await semantic.tap(remove,'恢复本次商品');
-              await semantic.waitStable(3);
-              if ((await cartBarState()).empty) cleanup='restored';
-            }
+          await new Promise(r => setTimeout(r, 1_500));
+          let restored = false;
+          for (let attempt = 0; attempt < 3 && !restored; attempt++) {
+            const state = await cartBarState().catch(() => null);
+            if (state?.empty) { restored = true; break; }
+            const minus = visualLocateRef ? await visualLocateRef('黄色圆形“−”按钮').catch(() => null) : null;
+            if (!minus) { await semantic.back(); await new Promise(r => setTimeout(r, 1_200)); continue; }
+            await tapPointRef!(minus.x, minus.y);
+            await new Promise(r => setTimeout(r, 1_800));
           }
+          if (restored) { cartMayHaveChanged = false; cleanup = 'restored'; }
         } catch { note('cleanup','购物车状态未确认，需要人工核对'); }
       }
 

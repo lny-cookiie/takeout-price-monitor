@@ -225,6 +225,21 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   if (!search) throw new Error('meituan_no_search_button');
   await semantic.tap(search, '搜索按钮');
 
+  // 外卖频道顶部偶尔会弹出“大牌上新”等活动页，把搜索点击截走；这时先退回频道页再点一次。
+  const ensureSearchEntry = async (): Promise<boolean> => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const input = await semantic.find(n => /EditText/i.test(n.cls) || /请输入|搜索商品|搜索品牌|历史搜索/.test(nodeLabel(n)), 2_500).catch(() => null);
+      if (input) return true;
+      const labels = (await semantic.read().catch(() => [] as U2Node[])).map(n => nodeLabel(n));
+      if (labels.some(l => /大牌上新|新品上市|活动会场/.test(l))) { await semantic.back(); await semantic.waitStable(3); }
+      const button = await findSearch();
+      if (button) { await semantic.tap(button, '搜索按钮'); await semantic.waitStable(3); continue; }
+      await semantic.back(); await semantic.waitStable(2);
+    }
+    return false;
+  };
+  if (!(await ensureSearchEntry())) throw new Error('meituan_search_failed');
+
   step('搜索品牌');
   // 层级 1：键盘输入品牌名（device.search，中文已验证可用，不依赖历史记录）；
   // 层级 2：精确匹配历史词；层级 3：包含匹配。
@@ -297,16 +312,28 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
     } else if (options.visualLocate) {
       // 搜索页是 MRNX 容器读不到历史词：用视觉点搜索框，再键盘输入。
       const inputHit = await options.visualLocate('页面顶部写着“搜索”的输入框');
-      if (!inputHit) throw new Error('meituan_no_search_entry');
-      await options.tapPoint(inputHit.x, inputHit.y);
-      await sleep(1_200);
-      await options.searchText?.(brand);
-      for (let i = 0; i < 5 && !searched; i++) { await sleep(1_000); searched = await inResultPage(); }
-      if (!searched) throw new Error('meituan_search_failed');
+      if (inputHit) {
+        await options.tapPoint(inputHit.x, inputHit.y);
+        await sleep(1_200);
+        await options.searchText?.(brand);
+        for (let i = 0; i < 5 && !searched; i++) { await sleep(1_000); searched = await inResultPage(); }
+      } else {
+        console.log('[meituan] 视觉定位没找到搜索框，交给外层恢复重试');
+      }
     } else {
       throw new Error('meituan_no_search_entry');
     }
   }
+
+  if (!searched && options.searchText) {
+    // 最后一层兜底：回到搜索入口重新输入一次。
+    if (await ensureSearchEntry()) {
+      try { await options.searchText(brand); } catch { /* 忽略 */ }
+      await sleep(1_500);
+      searched = await inResultPage() && await brandPresent();
+    }
+  }
+  if (!searched) throw new Error('meituan_search_failed');
 
   step('搜索结果页门店卡（视觉兜底）');
   // 结果页必须真的出现该品牌门店；出现的是别的店或推荐流时停止，避免进错门店后一路错下去。
@@ -514,9 +541,33 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
   }
 
   step('去结算');
-  const go = await semantic.find(n => nodeLabel(n).includes('去结算') || nodeLabel(n).includes('去支付'), 18_000);
-  if (!go) throw new Error('meituan_no_checkout');
-  await semantic.tap(go, '去结算');
+  // 点完“去结算”必须确认真的进入结算页：商品详情页和门店页底部都有“去结算”，
+  // 点击后页面可能还在动画，直接读节点会把详情页当成结算页（2026-11-17 实测）。
+  let enteredCheckout = false;
+  for (let attempt = 0; attempt < 2 && !enteredCheckout; attempt++) {
+    const go = await semantic.find(n => nodeLabel(n).includes('去结算') || nodeLabel(n).includes('去支付'), 18_000);
+    if (!go) {
+      // 第一次点击后如果“去结算”按钮消失了，说明页面已经切走（结算页可能读屏为空），按已进入处理。
+      if (attempt > 0) { enteredCheckout = true; break; }
+      throw new Error('meituan_no_checkout');
+    }
+    // 商品详情页底部的“去结算”用语义文本点击偶尔不生效，优先用视觉定位点按钮本体。
+    let tapped = false;
+    if (options.visualLocate) {
+      const hit = await options.visualLocate('底部栏右侧的“去结算”按钮').catch(() => null);
+      if (hit) { await options.tapPoint(hit.x, hit.y); tapped = true; }
+    }
+    if (!tapped) await semantic.tap(go, '去结算');
+    for (let i = 0; i < 10 && !enteredCheckout; i++) {
+      await sleep(800);
+      const labels = (await semantic.read().catch(() => [])).map(n => nodeLabel(n).trim());
+      if (labels.some(l => /提交订单|实付|支付方式|合计|确认订单/.test(l))) { enteredCheckout = true; break; }
+      // 结算页是 WebView 时读不到文字：页面有内容且“去结算”按钮消失，才判定为已跳转（空节点不能当依据）。
+      if (i >= 2 && labels.length > 5 && !labels.some(l => /去结算|去支付/.test(l))) { enteredCheckout = true; break; }
+    }
+    if (!enteredCheckout) console.log(`[meituan] 第${attempt + 1}次点击“去结算”后仍未进入结算页，重试`);
+  }
+  if (!enteredCheckout) throw new Error('meituan_checkout_not_entered');
 
   return steps;
 }
