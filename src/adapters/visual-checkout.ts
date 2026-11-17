@@ -123,7 +123,8 @@ export async function captureVisualCheckout(
   const missing: Record<string, string> = {};
   if (first.itemName) {
     const got = first.itemName.replace(/\s+/g, ''), want = expected.itemName.replace(/\s+/g, '');
-    if (!got.includes(want) && !want.includes(got)) throw new CollectionError('item_not_verified', 'blocked');
+    // 必须完全一致：“双层板烧鸡腿堡”包含“板烧鸡腿堡”，用包含判断会放过错商品。
+    if (got !== want) throw new CollectionError('item_not_verified', 'blocked');
   } else missing.item = '视觉读取未返回商品行，商品身份沿用前置门店与商品核对证据';
   if (first.itemQuantity !== null) {
     if (first.itemQuantity !== expected.quantity) throw new CollectionError('quantity_not_verified', 'blocked');
@@ -137,16 +138,16 @@ export async function captureVisualCheckout(
   const secondFen = moneyFen(second.payable);
   if (secondFen === null || secondFen !== firstFen) throw new CollectionError('amount_evidence_mismatch');
 
-  const toReading = (raw: string | null): Reading | null => {
+  const toReading = (raw: string | null, deduction = false): Reading | null => {
     if (raw === null) return null;
     try {
-      const fen = parseCny(raw);
+      const fen = parseCny(deduction ? raw.replace(/^[−-]\s*/, '') : raw);
       return { raw, fen, evidence };
     } catch { return null; }
   };
   const readings = {
     subtotal: toReading(first.subtotal), packaging: toReading(first.packaging), delivery: toReading(first.delivery),
-    other: toReading(first.other), discount: toReading(first.discount),
+    other: toReading(first.other), discount: toReading(first.discount, true),
   } as Record<BreakdownKey, Reading | null>;
   const components = Object.fromEntries(breakdownKeys.map(key => [key, readings[key] ?? null])) as QuoteDetails['components'];
   for (const key of breakdownKeys) if (!components[key]) missing[key] = '自绘结算页未以可读文字展示该费用行';
