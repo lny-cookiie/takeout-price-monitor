@@ -395,6 +395,39 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
         s3 = await submitAndCheck('results-check-4', async () => { await tapOrangeSearch(); });
       }
     }
+    if (s2 && !s3) {
+      // 备用路径：闪购频道页本身就是门店列表，直接滚动找麦当劳门店卡（夜间搜索入口只弹建议下拉时使用）。
+      log('  [results] 搜索入口未进入结果页，改从闪购频道门店列表查找麦当劳');
+      for (let attempt = 0; attempt < 8 && !s3; attempt++) {
+        try {
+          const shot = await snap(`channel-scan-${attempt + 1}`);
+          const meta = await sharp(shot).metadata();
+          const w = meta.width ?? W, h = meta.height ?? H;
+          const top = Math.round(h * 0.25), ch = Math.round(h * 0.70);
+          const crop = await sharp(shot).extract({left: 0, top, width: w, height: ch}).png().toBuffer();
+          const [cx, cy] = await model.locate('taobao_instant', crop, `文字“${brand}”`, signal);
+          const gx = Math.round(cx), gy = top + Math.round(cy);
+          if (gy > Math.round(h * 0.24) && gy < Math.round(h * 0.95)) {
+            await adb(['shell', 'input', 'tap', String(gx), String(gy)]);
+            await sleep(3_000);
+            const check = await readCropLines('channel-store-check', 0.03, 0.30, {maxLines: 16, maxTokens: 420}).catch(() => [] as string[]);
+            if (['点餐', '评价', '品牌'].every(t => check.some(line => line.includes(t)))) {
+              log(`  [results] 从频道列表点击麦当劳进入门店页 (${gx},${gy})`);
+              s3 = true;
+              break;
+            }
+            // 点错/未进店，返回频道继续
+            await adb(['shell', 'input', 'keyevent', '4']);
+            await sleep(1_500);
+          }
+        } catch (error) {
+          log(`  [results] 频道列表扫描失败：${(error as Error).message}`);
+        }
+        await adb(['shell', 'input', 'swipe', String(Math.round(W / 2)), String(Math.round(H * 0.78)), String(Math.round(W / 2)), String(Math.round(H * 0.42)), '380']);
+        await sleep(1_400);
+      }
+      if (!s3) log('  [results] 频道列表也没有找到麦当劳门店');
+    }
     mark('搜索品牌', !!s3, `${brand} 注入=${typedBrand}${s3 ? '' : '，未进入结果页'}`);
     if (!s3) return {store: null, item: null, originalFen: null, discountFen: null, packagingFen: null, deliveryFen: null, redPacketFen: null, totalFen: null, steps, rawText: null};
 
