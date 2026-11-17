@@ -189,31 +189,37 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
             await adbShell(['shell', 'input', 'swipe', String(Math.round(physical.width / 2)), String(Math.round(physical.height * 0.30)), String(Math.round(physical.width / 2)), String(Math.round(physical.height * 0.85)), '420']);
             await new Promise(r => setTimeout(r, 900));
             storeProof=await captureNodes(actualStore.nodes,'store');
-            // 当前美团版本的门店页不渲染底部购物车栏（真机四张整屏截图确认）。改为：
-            // 打开右上角“…”菜单 → 购物车。若目标店购物车有商品，购物车页会按门店分组列出该店；
-            // 若整页没有目标门店名，则目标店购物车为空。判断依据保存为文字记录，不保存含用户其他商品的截图。
-            const moreBtn=await semantic!.find(n=>/更多|更多选项/.test(nodeLabel(n)),1_500).catch(()=>null);
-            if(moreBtn){ await semantic!.tap(moreBtn,'更多菜单'); }
-            else {
-              const hit=await visualLocate('顶部右侧的“…”按钮').catch(()=>null);
-              if(!hit) throw new Error('cart_entry_missing');
-              await tapPoint(hit.x,hit.y);
+            if (opts.cartBarTexts) {
+              // 单测/注入模式：直接使用注入的底部购物车栏文字判断空车，不依赖真机菜单结构。
+              const injected = await cartBarState();
+              cartEmptyPrecheck = injected.empty;
+            } else {
+              // 当前美团版本的门店页不渲染底部购物车栏（真机四张整屏截图确认）。改为：
+              // 打开右上角“…”菜单 → 购物车。若目标店购物车有商品，购物车页会按门店分组列出该店；
+              // 若整页没有目标门店名，则目标店购物车为空。判断依据保存为文字记录，不保存含用户其他商品的截图。
+              const moreBtn=await semantic!.find(n=>/更多|更多选项/.test(nodeLabel(n)),1_500).catch(()=>null);
+              if(moreBtn){ await semantic!.tap(moreBtn,'更多菜单'); }
+              else {
+                const hit=await visualLocate('顶部右侧的“…”按钮').catch(()=>null);
+                if(!hit) throw new Error('cart_entry_missing');
+                await tapPoint(hit.x,hit.y);
+              }
+              await new Promise(r=>setTimeout(r,1_200));
+              const cartEntry=await semantic!.find(n=>nodeLabel(n).trim()==='购物车',3_000).catch(()=>null);
+              if(!cartEntry) throw new Error('cart_entry_missing');
+              await semantic!.tap(cartEntry,'购物车入口');
+              await semantic!.waitStable(4);
+              const cartNodes=await semantic!.read();
+              const cartLabels=cartNodes.map(n=>nodeLabel(n).trim()).filter(Boolean);
+              const targetListed=cartLabels.some(l=>l.includes(brand)&&/店/.test(l));
+              const cartTitleOk=cartLabels.some(l=>l==='购物车');
+              console.log('[meituan] 购物车页检查', JSON.stringify({targetListed, cartTitleOk, sample: cartLabels.filter(l=>/麦当劳|购物车|全选|去结算/.test(l)).slice(0,10)}));
+              note('cart_precheck', targetListed ? '购物车页出现目标门店，判定非空' : '购物车页未出现目标门店，判定目标店空车');
+              await semantic!.back();
+              await semantic!.waitStable(3);
+              if(!cartTitleOk) throw new Error('cart_page_unverified');
+              cartEmptyPrecheck=!targetListed;
             }
-            await new Promise(r=>setTimeout(r,1_200));
-            const cartEntry=await semantic!.find(n=>nodeLabel(n).trim()==='购物车',3_000).catch(()=>null);
-            if(!cartEntry) throw new Error('cart_entry_missing');
-            await semantic!.tap(cartEntry,'购物车入口');
-            await semantic!.waitStable(4);
-            const cartNodes=await semantic!.read();
-            const cartLabels=cartNodes.map(n=>nodeLabel(n).trim()).filter(Boolean);
-            const targetListed=cartLabels.some(l=>l.includes(brand)&&/店/.test(l));
-            const cartTitleOk=cartLabels.some(l=>l==='购物车');
-            console.log('[meituan] 购物车页检查', JSON.stringify({targetListed, cartTitleOk, sample: cartLabels.filter(l=>/麦当劳|购物车|全选|去结算/.test(l)).slice(0,10)}));
-            note('cart_precheck', targetListed ? '购物车页出现目标门店，判定非空' : '购物车页未出现目标门店，判定目标店空车');
-            await semantic!.back();
-            await semantic!.waitStable(3);
-            if(!cartTitleOk) throw new Error('cart_page_unverified');
-            cartEmptyPrecheck=!targetListed;
             if(!cartEmptyPrecheck) throw new Error('cart_preflight_unverified');
           },
           onCartMutation: async () => {

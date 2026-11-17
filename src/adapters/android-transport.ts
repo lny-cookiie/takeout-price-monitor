@@ -101,7 +101,16 @@ export const connectAndroid:AndroidTransport=async (source,signal)=>{
   if (selected?.state!=='device') throw new CollectionError('device_unavailable');
   const args=['-s',source.device];
   const version=await installedAppVersion(source.device,source.package,signal);
-  if (version!==source.appVersion) throw new CollectionError('app_version_changed','blocked');
+  if (version!==source.appVersion) {
+    // 探测模式：应用可能被商店自动更新，版本号变化不应直接把探索路径堵死。
+    // 只有显式设置 TAKEOUT_ALLOW_VERSION_DRIFT=1 时才放行；放行结果会记录实际版本，
+    // 验收批次不设置该变量，仍要求版本与登记一致，避免把“版本漂移下的探测”混进验收数据。
+    if (process.env.TAKEOUT_ALLOW_VERSION_DRIFT === '1') {
+      console.warn(`[transport] 应用版本漂移：登记=${source.appVersion} 实际=${version}，探测模式继续`);
+    } else {
+      throw new CollectionError('app_version_changed','blocked');
+    }
+  }
   signal.throwIfAborted();
   const device=new AndroidDevice(source.device,{exposeRunAdbShellAction:false,alwaysRefreshScreenInfo:false});
   const beforeInput=()=>{
