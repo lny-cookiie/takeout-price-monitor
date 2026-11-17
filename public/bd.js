@@ -5,11 +5,11 @@ const $=id=>document.getElementById(id),sleep=ms=>new Promise(ok=>setTimeout(ok,
 const API_PLATFORM={jd:'jd',meituan:'meituan',taobao:'taobao_instant'};
 const UI_PLATFORM={jd:'jd',meituan:'meituan',taobao_instant:'taobao'};
 const form=$('bd-form'),runPanel=$('run-panel'),summary=$('run-summary'),runsBox=$('platform-runs'),logBox=$('run-log'),logCount=$('log-count'),stateEl=$('run-state'),actions=$('run-actions'),openResult=$('open-result'),startBtn=$('start-btn');
-const resultPanel=$('result-panel'),resultBody=$('result-body'),resultState=$('result-state');
+const resultPanel=$('result-panel'),resultBody=$('result-body'),resultState=$('result-state'),stopBtn=$('stop-btn');
 let busy=false,failedPlatforms=new Set(),lastPayload=null,lastGroupId=null,logLines=0;
 function toast(message){const t=$('bd-toast');t.textContent=message;clearTimeout(t._timer);t._timer=setTimeout(()=>{t.textContent='';},3200);}
 function addLog(line){logLines++;logBox.textContent+=`[${new Date().toLocaleTimeString('zh-CN',{hour12:false})}] ${line}\n`;logBox.scrollTop=logBox.scrollHeight;logCount.textContent=logLines+' 条';}
-function resetRunView(){logBox.textContent='';logLines=0;logCount.textContent='0 条';failedPlatforms=new Set();actions.hidden=true;openResult.hidden=true;runsBox.innerHTML='';summary.innerHTML='';}
+function resetRunView(){logBox.textContent='';logLines=0;logCount.textContent='0 条';failedPlatforms=new Set();actions.hidden=true;openResult.hidden=true;stopBtn.hidden=true;stopBtn.disabled=false;runsBox.innerHTML='';summary.innerHTML='';}
 function renderSummary(payload,platforms){summary.innerHTML=`<div><span>城市 / 品牌</span><strong>${esc(payload.city)} · ${esc(payload.brand)}</strong></div>
 <div><span>门店</span><strong>${payload.store?esc(payload.store):'同城自动匹配'}</strong></div>
 <div><span>爆品</span><strong>${esc(payload.item)}</strong></div>`;
@@ -165,7 +165,8 @@ async function runPlatform(platform,payload,runId,state){
         if(p2>=percent||mapped){label=mapped;percent=Math.max(percent,p2);}
       }
       const runState=String(data.state||data.status||'');
-      if(slot.state==='completed'||['interrupted','source_blocked','window_missed'].includes(slot.state)||runState==='failed'||runState==='cancelled'){
+      if(slot.state==='completed'||['interrupted','source_blocked','window_missed','cancelled'].includes(slot.state)||runState==='failed'||runState==='cancelled'){
+        if(slot.state==='cancelled'){setRun(platform,'failed',percent,'已停止');addLog(`${PLATFORMS[platform].name} · 已按请求停止`);failedPlatforms.add(platform);return false;}
         if(slot.error||!['success','partial'].includes(slot.status)||!slot.observation?.quote_valid||!['untouched','restored'].includes(slot.cleanup)){
           offerCartConfirmation(platform,slot);
           setRun(platform,'failed',percent,'未取得可用报价');addLog(`${PLATFORMS[platform].name} · 未取得可用报价（${slot.error||slot.status||slot.state}；购物车：${slot.cleanup||'未知'}）`);failedPlatforms.add(platform);return false;}
@@ -180,7 +181,7 @@ form.addEventListener('submit',async event=>{event.preventDefault();if(busy)retu
   const platforms=[...form.querySelectorAll('input[name="platform"]:checked')].map(input=>input.value);
   if(!payload.city||!payload.brand||!payload.item){toast('请先填写城市、品牌和爆品名称');return;}
   if(!platforms.length){toast('至少选择一个采集平台');return;}
-  lastPayload=payload;busy=true;startBtn.disabled=true;startBtn.textContent='采集中…';resetRunView();runPanel.hidden=false;stateEl.textContent='采集中';
+  lastPayload=payload;busy=true;startBtn.disabled=true;startBtn.textContent='采集中…';resetRunView();runPanel.hidden=false;stateEl.textContent='采集中';stopBtn.hidden=false;stopBtn.disabled=false;
   renderSummary(payload,platforms);addLog(`开始采集：${payload.city} / ${payload.brand} / ${payload.item}，平台 ${platforms.map(p=>PLATFORMS[p].name).join('、')}`);
   const started=Date.now();
   const requestId=crypto.randomUUID();
@@ -194,14 +195,26 @@ form.addEventListener('submit',async event=>{event.preventDefault();if(busy)retu
     const r=(created.platforms||[]).find(x=>UI_PLATFORM[x.platform]===platform)||{};
     return runPlatform(platform,payload,r.runId,r.state);
   }));
-  busy=false;startBtn.disabled=false;startBtn.textContent='开始采集';
+  busy=false;startBtn.disabled=false;startBtn.textContent='开始采集';stopBtn.hidden=true;
   const ok=platforms.length-failedPlatforms.size;stateEl.textContent=failedPlatforms.size?'部分失败':'采集完成';
   addLog(`本次采集结束：成功 ${ok}/${platforms.length}，用时 ${((Date.now()-started)/1000).toFixed(1)} 秒`);
   if(lastGroupId)await loadResult(lastGroupId);
   if(failedPlatforms.size){actions.hidden=false;$('retry-btn').hidden=false;}else{$('retry-btn').hidden=true;}
   actions.hidden=false;});
-$('retry-btn').addEventListener('click',async()=>{if(busy||!lastPayload||!lastGroupId||!failedPlatforms.size)return;
-  const retry=[...failedPlatforms];failedPlatforms=new Set();busy=true;stateEl.textContent='重跑中';
+stopBtn.addEventListener('click',async()=>{
+  if(!lastGroupId||!busy)return;
+  if(!window.confirm('停止本次采集？排队中的平台会取消，正在执行的平台会在当前步骤退出后停止；已取得的结果与证据保留。'))return;
+  stopBtn.disabled=true;
+  addLog('已请求停止本次采集，等待当前步骤退出');
+  try{
+    const res=await fetch('/api/bd/runs/'+encodeURIComponent(lastGroupId)+'/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const data=await res.json();
+    if(!res.ok)throw new Error(data.message||data.error||'停止失败');
+    addLog(`停止请求已受理：取消排队 ${Number(data.queued||0)} 个，正在执行 ${Number(data.running||0)} 个`);
+    await refreshResult();
+  }catch(e){stopBtn.disabled=false;toast('停止失败：'+e.message);}
+});
+$('retry-btn').addEventListener('click',async()=>{if(busy||!lastPayload||!lastGroupId||!failedPlatforms.size)return;  const retry=[...failedPlatforms];failedPlatforms=new Set();busy=true;stateEl.textContent='重跑中';stopBtn.hidden=false;stopBtn.disabled=false;
   for(const platform of retry){
     try {
       const res=await fetch('/api/bd/runs/'+encodeURIComponent(lastGroupId)+'/retry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({platform:API_PLATFORM[platform]||platform})});
@@ -210,7 +223,7 @@ $('retry-btn').addEventListener('click',async()=>{if(busy||!lastPayload||!lastGr
       await runPlatform(platform,lastPayload,lastGroupId,'queued');
     } catch(e){failedPlatforms.add(platform);setRun(platform,'failed',100,'未重试');addLog(`${PLATFORMS[platform].name} · ${e.message}`);}
   }
-  busy=false;const ok=retry.length-failedPlatforms.size;stateEl.textContent=failedPlatforms.size?'仍有失败':'重跑完成';
+  busy=false;const ok=retry.length-failedPlatforms.size;stateEl.textContent=failedPlatforms.size?'仍有失败':'重跑完成';stopBtn.hidden=true;
   addLog(`重跑结束：成功 ${ok}/${retry.length}`);$('retry-btn').hidden=!failedPlatforms.size;});
 $('new-btn').addEventListener('click',()=>{runPanel.hidden=true;resetRunView();stateEl.textContent='排队中';form.querySelector('input[name="city"]').focus();});
 $('reset-btn').addEventListener('click',()=>{form.reset();runPanel.hidden=true;resetRunView();toast('已清空');});

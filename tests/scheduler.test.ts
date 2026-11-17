@@ -64,3 +64,45 @@ test('访问限制暂停同会话剩余任务，业务无报价仍在计划分�
     store.resetFixtureSessions();seed(store,'new-manual');assert.ok(store.claim('meituan',new Date().toISOString()));
   } finally {store.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('取消比较组：排队任务标记取消并写入事件记录',()=>{
+  const {store,dir}=fixture();try {
+    seed(store,'cancelqueued');
+    const cancelled=store.cancelQueued('cancelqueued');
+    assert.equal(cancelled,12);
+    const view=store.snapshot('cancelqueued');
+    assert.equal(view.slots.filter(s=>s.state==='cancelled').length,12);
+    assert.equal(view.events.filter(e=>e.code==='run_cancelled').length,12);
+    assert.equal(store.cancelQueued('cancelqueued'),0);
+  } finally {store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('取消比较组：正在执行的采集被中止，随后按取消记录结果',async()=>{
+  const {store,dir}=fixture();try {
+    seed(store,'cancelrun');
+    const collector={
+      platform:'meituan' as const, mode:'synthetic' as const,
+      collect: async () => { throw new Error('blocked collector should be interrupted'); },
+      close: () => undefined,
+    };
+    const blocking={
+      platform:'meituan' as const, mode:'synthetic' as const,
+      collect: (task:unknown, attemptId:unknown, signal:AbortSignal) => new Promise<never>((_, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('aborted')));
+      }),
+      close: () => undefined,
+    };
+    const scheduler=new Scheduler(store,[blocking as never]);
+    scheduler.tick(new Date());
+    await new Promise(r=>setTimeout(r,30));
+    const result=scheduler.cancelRun('cancelrun');
+    assert.equal(result.queued,11);
+    assert.equal(result.running,1);
+    for (let i=0;i<40 && store.snapshot('cancelrun').slots.some(s=>s.state==='running');i++) await new Promise(r=>setTimeout(r,25));
+    const view=store.snapshot('cancelrun');
+    assert.equal(view.slots.filter(s=>s.state==='cancelled').length,11);
+    const finished=view.slots.find(s=>s.state==='completed');
+    assert.equal(finished?.result?.error_code,'cancelled');
+    void collector;
+  } finally {store.close();rmSync(dir,{recursive:true,force:true});}
+});

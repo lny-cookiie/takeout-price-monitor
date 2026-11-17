@@ -32,7 +32,8 @@ function trimFields<T extends object>(value:T):T {
   return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,typeof v==='string' ? v.trim() : v])) as T;
 }
 
-export function competitionApi(store: CompetitionStore, sources: AndroidSources, model: ModelGateway, evidence: EvidenceStore, tick: () => void) {
+export function competitionApi(store: CompetitionStore, sources: AndroidSources, model: ModelGateway, evidence: EvidenceStore, tick: () => void,
+  cancelRun?: (runId: string) => {queued: number; running: number}) {
   let matching = false, testing = false;
   return async (method: string, url: URL, body: (limit?: number) => Promise<unknown>, reply: (status: number, data: unknown, type?: string) => void) => {
     const path = url.pathname;
@@ -207,6 +208,12 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
       const input=validator<{platform:string}>(object({platform:{type:'string',enum:[...PLATFORMS]}},['platform']),'重试请求')(await body());
       store.retryGroupPlatform(bdRetry[1]!,input.platform as Platform);
       tick(); reply(202,{runId:bdRetry[1],platform:input.platform}); return true;
+    }
+    const bdCancel=/^\/api\/bd\/runs\/([a-f0-9-]{36})\/cancel$/.exec(path);
+    if (method==='POST' && bdCancel) {
+      if(!cancelRun) throw new Error('cancel_not_available');
+      const result=cancelRun(bdCancel[1]!);
+      tick(); reply(202,{runId:bdCancel[1]!,...result}); return true;
     }
     const cartConfirm=/^\/api\/bd\/slots\/([\w:-]{1,140})\/confirm-empty-cart$/.exec(path);
     if (method==='POST' && cartConfirm) {

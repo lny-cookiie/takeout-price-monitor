@@ -47,7 +47,7 @@ export async function createApplication(options: { root?: string; dataDir?: stri
   const browser = new BrowserPool(), evidence = new EvidenceStore(join(dataDir,'evidence'));
   let scheduler: Scheduler;
   let baseUrl = '';
-  const business = competitionApi(market,sources,model,evidence,()=>scheduler.tick());
+  const business = competitionApi(market,sources,model,evidence,()=>scheduler.tick(),(runId)=>scheduler.cancelRun(runId));
   const reply = (res: ServerResponse, code: number, data: unknown, type = 'application/json; charset=utf-8') => {
     res.writeHead(code,{ 'Content-Type':type, 'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff', 'Referrer-Policy':'same-origin', 'X-Frame-Options':'DENY', 'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" });
     res.end(Buffer.isBuffer(data) || typeof data === 'string' ? data : JSON.stringify(data));

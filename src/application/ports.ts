@@ -17,5 +17,7 @@ export interface CollectionStore {
   schedules(): Schedule[];
   saveSchedule(schedule: Schedule): void;
   cancelSchedule(id: string): void;
+  /** 取消一个比较组里还没开始执行的平台任务，返回取消数量。 */
+  cancelQueued?(runId: string): number;
   close(): void;
 }

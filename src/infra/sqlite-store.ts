@@ -267,6 +267,18 @@ export class SqliteStore implements CollectionStore {
       }
     });
   }
+  /** 取消一个比较组里还没开始执行的平台任务；已在执行的任务由调度器中止，结果照常记录。 */
+  cancelQueued(runId: string): number {
+    return this.transaction(() => {
+      const rows = this.db.prepare("SELECT task_json FROM slots WHERE run_id=? AND state='queued'").all(runId) as Row[];
+      for (const r of rows) {
+        const t = json<Task>(r.task_json);
+        this.db.prepare("UPDATE slots SET state='cancelled' WHERE id=?").run(t.slot_id);
+        this.event(t,'collection','run_cancelled');
+      }
+      return rows.length;
+    });
+  }
   snapshot(runId?: string): Snapshot {
     const runs = (this.db.prepare('SELECT * FROM runs WHERE tenant_id=? ORDER BY created_at DESC LIMIT 50').all(TENANT) as Row[]).map(r => ({ id: String(r.id), scenario: String(r.scenario), created_at: String(r.created_at), label: String(r.label), schedule_key: r.schedule_key as string | null })) as RunInfo[];
     const selected = runId ?? runs[0]?.id ?? null;

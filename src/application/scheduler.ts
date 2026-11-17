@@ -20,6 +20,8 @@ export class Scheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
   private working = new Map<string,Promise<void>>();
   private controllers = new Set<AbortController>();
+  private runControllers = new Map<string, Set<AbortController>>();
+  private cancelRequested = new Set<string>();
   private stopping = false;
   constructor(private store: CollectionStore, private collectors: Collector[], readonly intervalMs = 750, private materializeLive?: (now: Date) => void,
     private following?: (task: Task,result: AttemptResult)=>Task[]) {}
@@ -63,6 +65,8 @@ export class Scheduler {
       const claim = this.store.claim(collector.platform,now.toISOString(),collector.mode ?? 'synthetic');
       if (!claim) continue;
       const controller = new AbortController(); this.controllers.add(controller);
+      const runSet = this.runControllers.get(claim.task.run_id) ?? new Set<AbortController>();
+      runSet.add(controller); this.runControllers.set(claim.task.run_id, runSet);
       const duration = Math.max(1,Math.min(claim.task.timeout_seconds*1000,Date.parse(claim.task.deadline_at)-Date.now()));
       const timeout = setTimeout(() => controller.abort(),duration);
       const work = (async () => {
@@ -83,6 +87,7 @@ export class Scheduler {
           children=[];
           const at=new Date().toISOString();
           if(e instanceof CollectionError)failure=e.code;
+          else if(controller.signal.aborted && this.cancelRequested.has(claim.task.run_id)) failure='cancelled';
           result={status:'failed',error_code:failure,availability:'unknown',observation:null,trace:[{phase:'stop',at,note:audited ? failure : String(e).slice(0,200)}],
             evidence:collected?.evidence??null,market:collected?.market,menuPriceReason:collected?.menuPriceReason,timings:collected?.timings,
             started_at:startedAt,finished_at:at,cleanup:collected?.cleanup??(claim.task.shelf ? 'untouched' : 'quarantined'),cost:{model_yuan:collected?.cost.model_yuan??null,execution_ms:Date.parse(at)-Date.parse(startedAt)}};
@@ -94,7 +99,9 @@ export class Scheduler {
             data:{availability:result.availability,cleanup:result.cleanup},evidenceIds:result.evidence ? [result.evidence.id] : []});
           this.store.finish(claim,result,canRetry ? new Date(Date.now()+1000).toISOString() : null,children);
         } catch(e) { console.error('publish_failed',e); /* Keep the claimed slot and its locks until a controlled restart. */ }
-      })().finally(() => { clearTimeout(timeout); this.controllers.delete(controller); this.working.delete(workerKey); });
+      })().finally(() => { clearTimeout(timeout); this.controllers.delete(controller);
+        const set=this.runControllers.get(claim.task.run_id); if(set){set.delete(controller);if(!set.size)this.runControllers.delete(claim.task.run_id);}
+        this.working.delete(workerKey); });
       this.working.set(workerKey,work);
     }
   }
@@ -102,5 +109,13 @@ export class Scheduler {
     this.stopping = true; clearInterval(this.timer);
     for (const c of this.controllers) c.abort();
     await Promise.allSettled(this.working.values());
+  }
+  /** 取消比较组：排队中的平台直接标记取消，正在执行的平台中止后按取消记录结果。 */
+  cancelRun(runId: string): {queued: number; running: number} {
+    this.cancelRequested.add(runId);
+    const running = this.runControllers.get(runId)?.size ?? 0;
+    for (const controller of this.runControllers.get(runId) ?? []) controller.abort();
+    const queued = this.store.cancelQueued?.(runId) ?? 0;
+    return {queued, running};
   }
 }
