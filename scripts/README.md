@@ -45,3 +45,5 @@ python scripts/diagrams/draw_ue_flowcharts.py
 审稿裁剪图、SVG/PDF/DOT 导出与 imagegen 参考图归档在 `前期调研/图表/_archive/`，不再维护。
 | `bd-acceptance.ts` | v2 验收批次：从正式 `/api/bd/runs` 逐组提交三平台比较组，保留失败与重试，核对证据哈希，统计完整组率与 P50/P90；用法 `npx tsx scripts/bd-acceptance.ts --label=A --groups=20 --input=scripts/bd-batch.example.json`。 |
 | `bd-acceptance-report.ts` | 汇总 A/B 两批验收：完整组率、平台有效率、购物车与证据核对、P50/P90 与改善幅度，并生成逐份复核清单；用法 `npx tsx scripts/bd-acceptance-report.ts --a=<A目录> --b=<B目录> --out=<报告路径>`。 |
+| `bd-review-evidence.ts` | 逐份复核有效报价：下载结算/门店/商品证据、核对哈希、用 Windows OCR 独立识读页面文字，输出人工复核清单；用法 `npx tsx scripts/bd-review-evidence.ts --runs=<id1,id2>` 或 `--batch=<批次目录>`。 |
+| `freeze-baseline.ts` | 冻结验收基线：记录代码提交、构建产物与配置哈希、模型与设备状态，并用 VACUUM INTO 生成数据库一致性副本；用法 `npx tsx scripts/freeze-baseline.ts --label=A`。工作区不干净时退出码为 2，不能用于正式验收。 |
