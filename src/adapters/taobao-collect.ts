@@ -4,6 +4,7 @@ import {promisify} from 'node:util';
 import sharp from 'sharp';
 import type {ModelGateway} from '../infra/model.js';
 import {requireAndroidForeground} from './android-transport.js';
+import {nodeLabel} from './meituan-semantic.js';
 import type {U2Node} from './meituan-semantic.js';
 import {AndroidUiTreeReader} from './android-uitree.js';
 import {flatten} from './android-page.js';
@@ -42,6 +43,8 @@ export interface TaobaoQuote {
   steps: TaobaoStep[];
   /** 结算页原始文本证据，便于人工核对 */
   rawText: string | null;
+  /** 费用行是否全部读到并加减核对通过 */
+  reconciled?: boolean;
 }
 
 export interface TaobaoCollectOptions {
@@ -109,6 +112,15 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
         {image: crop, signal: activeSignal, maxTokens: 500});
       return content.split(/\r?\n/).map(x => x.trim()).filter(Boolean).slice(0, 15);
     };
+  /** 两帧截图的 48×48 灰度平均绝对差；用于判断“页面是否真的变了”，不依赖模型。 */
+  const screenMAD = async (a: Buffer, b: Buffer) => {
+    const ra = await sharp(a).resize(48, 48).greyscale().raw().toBuffer();
+    const rb = await sharp(b).resize(48, 48).greyscale().raw().toBuffer();
+    const n = Math.min(ra.length, rb.length);
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += Math.abs(ra[i]! - rb[i]!);
+    return n ? sum / n : 0;
+  };
   const captureNodes=async(nodes:U2Node[],stage:string):Promise<Evidence>=>{
     const png=await snap(stage), fresh=await readNodes();
     if (nodes.some(n=>!fresh.some(v=>v.text===n.text && v.desc===n.desc && v.left===n.left && v.top===n.top && v.width===n.width && v.height===n.height)))
@@ -221,16 +233,19 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
 
     // 1 首页 →「闪购外卖」tab
     // 冷启动后的首页偶尔会自己跳回“推荐”页或弹活动层：点完闪购必须确认页面真的变了，再继续。
+    // 页面是否切换用截图差异判断（模型读字偶发回显提示词，不适合作页面状态判据）。
     let s1 = false;
     for (let i = 0; i < 3 && !s1; i++) {
+      const before = await snap(`flash-before-${i + 1}`);
       const tapped = await tapByVision('文字“闪购”', i === 0 ? 'flash-tab' : `flash-tab-${i + 1}`, {yMin: Math.round(H*0.04), yMax: Math.round(H*0.11), cropTopRatio: 0.02, cropBottomRatio: 0.13}, 1);
       if (!tapped) continue;
-      await sleep(1_800);
-      const lines = await readCropLines(`flash-check-${i + 1}`, 0, 0.30).catch(() => [] as string[]);
-      s1 = lines.some(l => /闪购/.test(l) && /外卖|超值|送到家/.test(l));
+      await sleep(2_500);
+      const after = await snap(`flash-after-${i + 1}`);
+      const mad = await screenMAD(before, after);
+      s1 = mad >= 6;
+      log(`  [flash-tab] 第${i + 1}次点击后画面差异=${mad.toFixed(1)} 判定=${s1 ? '已切换' : '未切换'}`);
       if (!s1) {
-        try { const {writeFile} = await import('node:fs/promises'); await writeFile(`.runtime/tb-flash-fail-${i + 1}.png`, await snap(`flash-dbg-${i + 1}`)); } catch { /* 诊断 */ }
-        log(`  [flash-tab] 第${i + 1}次点击后仍未进入闪购频道，重试；顶部行：${lines.slice(0, 6).join(' / ')}`);
+        try { const {writeFile} = await import('node:fs/promises'); await writeFile(`.runtime/tb-flash-fail-${i + 1}.png`, after); } catch { /* 诊断 */ }
       }
     }
     mark('进入闪购频道', s1);
@@ -303,51 +318,35 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     const s4 = s3 && await tapByVision(storeHint, 'store',
       {yMin: Math.round(H * 0.25), yMax: Math.round(H * 0.64), cropTopRatio: 0.22, cropBottomRatio: 0.66}, 2);
     if (s4) {
-      // 诊断：点击门店卡后立即保存整屏截图与前台 Activity，用于判断到底进了哪一页。
-      try {
-        const {writeFile} = await import('node:fs/promises');
-        await writeFile('.runtime/tb-store-after-click.png', await snap('store-after-click'));
-        const focus = String(await adb(['shell', 'dumpsys', 'window'])).split('\n').filter(l => l.includes('mCurrentFocus')).join('\n');
-        log('  [store] 点击后前台 ' + focus.trim().slice(0, 160));
-      } catch { /* 诊断不影响主流程 */ }
-      try { actualStore=observedStore(await readNodes(),brand,o.city); } catch { actualStore=null; }
-      if (!actualStore) {
-        // 淘宝门店页是 Flutter/MRNX 自绘，u2 读不到文字；视觉定位能进店，但让 2B 模型“判断门店名和地址”
-        // 会读到配送地址（北京市朝阳区）并幻觉。改为滑到门店页顶部，让模型只逐行读可见文字，
-        // 由代码在文字行里找“品牌+店”的门店名和含城市的地址行。
-        let storeName: string | null = null;
-        let storeAddress: string | null = null;
-        let storePng: Buffer | null = null;
-        for (let i = 0; i < 2 && (!storeName || !storeAddress); i++) {
-          await adb(['shell', 'input', 'swipe', String(Math.round(W / 2)), String(Math.round(H * 0.32)), String(Math.round(W / 2)), String(Math.round(H * 0.92)), '420']);
-          await sleep(1_800);
-          const shot = await readLines(`store-verify-${i + 1}`);
-          log(`  [store] 顶部可见行：${shot.lines.slice(0, 12).join(' / ')}`);
-          const nameLine = shot.lines.find(l => l.includes(brand) && /店/.test(l) && l.length < 60) ?? null;
-          const addressLine = shot.lines.find(l => /天津/.test(l) && /(路|道|街|号)/.test(l)) ?? null;
-          if (!storeName && nameLine) storeName = nameLine;
-          if (!storeAddress && addressLine) storeAddress = addressLine;
-          if (!storePng && (nameLine || addressLine)) storePng = shot.png;
-        }
-        const cityKey = normalize(o.city).replace(/市$/, '');
-        const nameOk = !!storeName && normalize(storeName).includes(normalize(brand));
-        const addrOk = !!storeAddress && !!cityKey && normalize(storeAddress).includes(cityKey);
-        log(`  [store] 识别门店=${storeName ?? '未读到'} 地址=${storeAddress ?? '未读到'}`);
-        // 淘宝门店页顶部不显示门店名称和地址（真机截图确认只有搜索框与点餐/评价/品牌三个标签）。
-        // 门店身份改到结算页核对；这里先保留进店页截图作为证据，不伪造门店名。
-        const png = storePng ?? await snap('store-verify-last');
-        const floor = Math.round(H * 0.18);
-        const masked = await sharp(png).composite([{input: await sharp({create: {width: W, height: floor, channels: 3, background: '#121719'}}).png().toBuffer(), left: 0, top: 0}]).png().toBuffer();
-        if (nameOk && addrOk) {
-          actualStore = {name: storeName!, address: storeAddress!, nodes: []};
-          storeEvidence = await o.evidence.save(randomUUID(), 'store', masked, `门店名称：${storeName}\n营业地址：${storeAddress}`, 'live');
-        } else {
-          storeEvidence = await o.evidence.save(randomUUID(), 'store_entry', masked, '门店页未显示门店名和地址，门店身份待结算页核对', 'live');
-          log('  [store] 门店页未显示店名/地址，改为结算页核对');
-        }
-      } else {
-        storeEvidence = await captureNodes(actualStore.nodes, 'store');
+      // 淘宝门店页的“点餐”页不显示门店名和地址，但“品牌”标签页会显示门店全名和营业地址（真机确认）。
+      // 门店身份必须来自这里，不能用结算页的收货地址冒充门店地址。
+      await sleep(1_500);
+      const openedBrand = await tapByVision('文字“品牌”', 'store-brand', {yMin: Math.round(H * 0.05), yMax: Math.round(H * 0.30), cropTopRatio: 0.04, cropBottomRatio: 0.32}, 2);
+      if (!openedBrand) {
+        // 视觉定位偶发把自己限制在“品牌故事”那张图上；退回顶部标签栏的比例坐标，点完仍以品牌页文字核对为准。
+        log('  [store-brand] 视觉定位失败，退回标签栏比例坐标');
+        await adb(['shell', 'input', 'tap', String(Math.round(W * 0.45)), String(Math.round(H * 0.12))]);
       }
+      await sleep(2_200);
+      const brandLines = await readCropLines('store-brand-lines', 0.06, 0.45).catch(() => [] as string[]);
+      log(`  [store] 品牌页可见行：${brandLines.slice(0, 14).join(' / ')}`);
+      const clean = (line: string) => line.replace(/>+\s*$/g, '').replace(/\s*堂食店\s*$/g, '').trim();
+      const storeName = (brandLines.find(line => line.includes(brand) && /店/.test(line) && line.length < 60) ?? null) && clean(brandLines.find(line => line.includes(brand) && /店/.test(line) && line.length < 60)!);
+      const addressLine = (brandLines.find(line => /天津/.test(line) && /(路|街|道|号)/.test(line)) ?? null) && clean(brandLines.find(line => /天津/.test(line) && /(路|街|道|号)/.test(line))!);
+      const cityKey = normalize(o.city).replace(/市$/, '');
+      const nameOk = !!storeName && normalize(storeName).includes(normalize(brand));
+      const addrOk = !!addressLine && normalize(addressLine).includes(cityKey);
+      log(`  [store] 品牌页识别门店=${storeName ?? '未读到'} 地址=${addressLine ?? '未读到'}`);
+      if (!nameOk || !addrOk) throw new Error('taobao_store_unverified');
+      actualStore = {name: storeName!, address: addressLine!, nodes: []};
+      const brandPng = await snap('store-brand-evidence');
+      // 品牌页只有门店/品牌信息；顶部 10% 涂黑防状态栏个人信息，其余保留。
+      const floor = Math.round(H * 0.10);
+      const masked = await sharp(brandPng).composite([{input: await sharp({create: {width: W, height: floor, channels: 3, background: '#121719'}}).png().toBuffer(), left: 0, top: 0}]).png().toBuffer();
+      storeEvidence = await o.evidence.save(randomUUID(), 'store', masked, `门店名称：${storeName}\n营业地址：${addressLine}`, 'live');
+      // 回点餐页继续店内搜索
+      await tapByVision('文字“点餐”', 'store-menu', {yMin: Math.round(H * 0.06), yMax: Math.round(H * 0.22), cropTopRatio: 0.05, cropBottomRatio: 0.24}, 2).catch(() => false);
+      await sleep(1_500);
     }
     // 购物车底栏同样不在读屏树里；用底栏截图文字判断空车（空车显示“¥20起送/另需配送费”，有商品显示“去结算/到手约”）。
     let cartEmptyPrecheck = false;
@@ -376,34 +375,48 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 7 点目标单品加号。用标定的相对比例坐标。
     // 注意：搜索后页面本来就停在顶部，这里**不要**再 swipe 回滚——实测多余滑动会让商品行偏移，
     // 导致标定坐标点空（2026-11-12 复现：加了 swipe 后停在结果页，去掉后正常进入单品详情页）。
+    // 7 加购目标单品：店内搜索结果里同一个“板烧鸡腿堡”会混着三件套/套餐行，
+    // 目标单品行可能在屏幕下方。这里循环“找橙色+按钮 → 读该按钮所在行的标题 → 标题完全等于单品名才点”，
+    // 不匹配就上滑继续找。行内文字用模型只读文字行、代码判定，不依赖模型判断“是不是套餐”。
     let s7 = false;
     if (s6) {
       if (!cartEmptyPrecheck) throw new Error('cart_preflight_unverified');
-      const nodes=await readNodes();
-      actualItem=observedItem(nodes,itemName,o.itemSpec);
-      if (!actualItem) throw new Error('taobao_item_unverified');
-      itemEvidence=await captureNodes(actualItem.nodes,'item');
-      cartMayHaveChanged=true;
-      o.onCleanup('quarantined');
+      try { const {writeFile} = await import('node:fs/promises'); await writeFile('.runtime/tb-item-list.png', await snap('item-list-dbg')); } catch { /* 诊断 */ }
+      // 目标单品行通常排在 3 个套餐之后、首屏看不到；先大幅上滑一次，减少“找按钮-读行标题”的轮数（每次约 10 秒）。
+      await adb(['shell', 'input', 'swipe', String(Math.round(W / 2)), String(Math.round(H * 0.72)), String(Math.round(W / 2)), String(Math.round(H * 0.34)), '380']);
+      await sleep(1_500);
+      for (let attempt = 0; attempt < 4 && !s7; attempt++) {
+        const shot = await snap(`find-plus-${attempt + 1}`);
+        let hit: [number, number] | null = null;
+        try { hit = await model.locate('taobao_instant', shot, '橙色圆形“+”按钮', signal); } catch (error) { log(`  [plus] 定位失败：${(error as Error).message}`); }
+        if (hit) {
+          const x = Math.round(hit[0]), y = Math.round(hit[1]);
+          // 商品标题在“+”按钮上方约 200-320 像素处；裁剪带要同时覆盖标题和价格。
+          const bandTop = Math.max(0, y - 330), bandH = Math.min(430, H - bandTop);
+          const band = await sharp(shot).extract({left: 0, top: bandTop, width: W, height: bandH}).resize({width: 900}).png().toBuffer();
+          let rowText = '';
+          try {
+            rowText = await model.text('taobao_instant', 'taobao_row_title',
+              '把这张截图里的可见文字按行原样输出，最多 10 行；不要编号、不要总结。',
+              {image: band, signal, maxTokens: 300});
+          } catch { /* 读不到就当作不匹配 */ }
+          const rowLines = rowText.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+          log(`  [plus] 候选 (${x},${y}) 行内文字：${rowLines.slice(0, 8).join(' / ')}`);
+          // 单品行的标题会单独成行且完全等于目标名；套餐行是“板烧鸡腿堡套餐/三件套”等，不会完全相等。
+          if (rowLines.some(line => line === itemName)) {
+            await adb(['shell', 'input', 'tap', String(x), String(y)]);
+            log(`  [add-item] 点击单品行加号 (${x},${y})`);
+            cartMayHaveChanged = true;
+            o.onCleanup('quarantined');
+            s7 = true;
+            break;
+          }
+        }
+        await adb(['shell', 'input', 'swipe', String(Math.round(W / 2)), String(Math.round(H * 0.62)), String(Math.round(W / 2)), String(Math.round(H * 0.44)), '380']);
+        await sleep(1_800);
+      }
+      if (!s7) log('  [add-item] 没有找到标题完全等于单品名的行');
       await sleep(3000);
-      // 不再用「标定相对坐标」点商品：店内搜索结果前三行分别是
-      //   ①双层板烧鸡腿堡三件套(¥61起，右侧“选套餐”) ②板烧鸡腿堡套餐(¥42起，右侧“选套餐”) ③板烧鸡腿堡(¥26.5，右侧“− 1 +”)
-      // 固定比例会随页面布局漂移而点到套餐上（实测采到 ¥56.9 的三件套）。
-      // 改为语义定位：只认「标题正好是板烧鸡腿堡、且右侧是加减号数量控件」的那一行。
-      // 提示词必须用「视觉形状」区分，而不是靠模型理解“不要套餐”：
-      // 套餐行的最右侧是红色矩形“选套餐”按钮，单点商品行的最右侧才是橙色圆形“+”。
-      // 2B 模型只靠否定式描述会照样点“选套餐”（实测点到了第一行三件套的选套餐）。
-      const addHint = '最上方的橙色圆形“+”按钮';
-      // 横向也收紧到右侧 72% 之后：加号固定在商品行最右端，
-      // 不收横向时模型会点到左侧商品图（实测点到 x≈0.43W 的图片上，进而跳详情页多加购）。
-      // 纵向下界压到 60%：软键盘从约 65% 处弹出，商品行在其上方。
-      s7 = await tapByVision(addHint, 'add-item',
-        {xMin: Math.round(W * 0.72), xMax: W - 10,
-         yMin: Math.round(H * 0.08), yMax: Math.round(H * 0.60),
-         cropTopRatio: 0.07, cropBottomRatio: 0.62}, 3);
-      if (s7) log(`  [add-item] 已通过语义定位点击「${itemName}」的加号`);
-      else log('  [add-item] 未定位到目标单品的加号');
-      await sleep(4000);
     }
     mark('定位单品', s7);
 
@@ -413,65 +426,153 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     //    所以这里无条件尝试点一次「加入购物车」；已经加购时按钮不存在，定位失败即可，不重试。
     let s8=false;
     if (s7) {
-      const afterItem=await readNodes();
-      if (cartIsExplicitlyEmpty(afterItem)) {
-        s8=await tapByVision('“加入购物车”按钮', 'addcart',
-          {yMin: Math.round(H * 0.40), yMax: Math.round(H * 0.68), cropTopRatio: 0.36, cropBottomRatio: 0.72}, 1);
-      } else if (observedSingleBasket(afterItem,itemName,o.itemSpec) || ownedCartRemoveControl(afterItem,itemName,o.itemSpec)) s8=true;
-      else throw new Error('taobao_cart_state_unverified');
+      // 直接点中 + 时商品已加购，底栏出现“去结算/到手约”；若点开的是详情页，底栏仍是空车，需要再点“加入购物车”。
+      const bottom = await readCropLines('after-add', 0.82, 1).catch(() => [] as string[]);
+      log(`  [addcart] 底栏：${bottom.slice(0, 6).join(' / ')}`);
+      s8 = bottom.some(line => /去结算|到手约|共减/.test(line));
+      if (!s8) {
+        s8 = await tapByVision('“加入购物车”按钮', 'addcart',
+          {yMin: Math.round(H * 0.40), yMax: Math.round(H * 0.72), cropTopRatio: 0.36, cropBottomRatio: 0.74}, 1);
+        if (s8) await sleep(1_200);
+      }
     }
     mark('加购结算', s8);
     await sleep(2200);
 
-    // 9 去结算
-    const s9 = s8 && await tapByVision('“去结算”按钮', 'checkout', {yMin: Math.round(H * 0.85), yMax: H - 10, cropTopRatio: 0.80, cropBottomRatio: 1});
+    // 9 去结算：点完必须确认页面真的换了（会直接点空/点到购物车栏），用截图差异判断。
+    let s9 = false;
+    if (s8) {
+      for (let i = 0; i < 2 && !s9; i++) {
+        const before = await snap(`checkout-before-${i + 1}`);
+        const tapped = await tapByVision('“去结算”按钮', 'checkout', {yMin: Math.round(H * 0.90), yMax: H - 10, cropTopRatio: 0.86, cropBottomRatio: 1}, 1);
+        if (!tapped) continue;
+        await sleep(3_500);
+        const after = await snap(`checkout-after-${i + 1}`);
+        const mad = await screenMAD(before, after);
+        s9 = mad >= 6;
+        log(`  [checkout] 第${i + 1}次点击后画面差异=${mad.toFixed(1)} 判定=${s9 ? '已进入结算页' : '未跳转'}`);
+      }
+    }
     mark('去结算', !!s9);
-    await sleep(5000);
-
+    await sleep(4_000);
     if (!s9) return {store: null, item: null, originalFen: null, discountFen: null, packagingFen: null, deliveryFen: null, redPacketFen: null, totalFen: null, steps, rawText: null};
 
-    // 结算页必须重新核对商品与数量，并从明确标注的应付节点取证。
-    const checkoutNodes=await readNodes();
-    if (!observedSingleBasket(checkoutNodes,itemName,o.itemSpec)) throw new Error('taobao_checkout_item_unverified');
-    const parsed=readMeituanSettlement(checkoutNodes);
-    const payableNodes=payableEvidenceNodes(checkoutNodes,parsed.raw);
-    if (!payableNodes || parsed.payable_fen==null) throw new Error('taobao_payable_unverified');
-    const checkoutEvidence=await captureNodes(payableNodes,'checkout');
-    const checkoutImage=await o.evidence.read(checkoutEvidence.id,'png');
-    const verification=await model.json<{value:string}>('taobao_instant','taobao_checkout_verify',
-      '读取实付或合计标签旁的金额，只输出金额；没有看到则输出空字符串。',{},v=>v as {value:string},
-      {image:checkoutImage,signal,schema:{type:'object',properties:{value:{type:'string'}},required:['value'],additionalProperties:false}});
-    const match=/^\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?)\s*$/.exec(verification.value ?? '');
-    if (!match || Math.round(Number(match[1])*100)!==parsed.payable_fen) throw new Error('taobao_payable_mismatch');
-    if (!actualStore || !actualItem || !storeEvidence || !itemEvidence) throw new Error('taobao_identity_unverified');
-    mark('采数完成',true);
-    return {checkoutSha256:checkoutEvidence.sha256,checkoutEvidence,storeEvidence,itemEvidence,
-      store:actualStore.name,storeAddress:actualStore.address,item:actualItem.name,itemSpec:actualItem.spec,
-      originalFen:null,discountFen:null,packagingFen:null,deliveryFen:null,redPacketFen:null,
-      totalFen:parsed.payable_fen,steps,rawText:JSON.stringify({payable:parsed.raw})};
+    // 结算页读屏不可用（实测 0 节点）：整页截图读文字，金额读两次必须一致。
+    // 隐私：整页截图只用于本地模型读取；保存证据时把顶部地址区域涂黑。
+    const readCheckoutLines = async (tag: string) => {
+      const png = await snap(tag);
+      const content = await o.model.text('taobao_instant', 'taobao_checkout_lines',
+        '把这张结算页截图里所有可见文字按行原样输出，最多 30 行；金额、商品名、门店名都要按原样保留。不要总结、不要判断。',
+        {image: png, signal: activeSignal, maxImageWidth: 900, maxTokens: 700});
+      return {lines: content.split(/\r?\n/).map(v => v.trim()).filter(Boolean), png};
+    };
+    const firstRead = await readCheckoutLines('checkout-read-1');
+    const secondRead = await readCheckoutLines('checkout-read-2');
+    // 隐私：收货地址、收件人、手机号一律不写日志、不落证据文字；门店地址是商家信息，保留。
+    const redact = (line: string) => line
+      .replace(/\d{11}/g, '***')
+      .replace(/(公寓|小区|单元|宿舍|号楼|栋|室)\S*/g, '***');
+    const isPersonal = (line: string) =>
+      /\d{11}/.test(line) || /(公寓|小区|单元|宿舍|号楼|栋|室)/.test(line) ||
+      (/天津/.test(line) && /(大学|学院|校区|新三村|学者|村)/.test(line));
+    const safeLines = (lines: string[]) => lines.filter(line => !isPersonal(line)).map(redact);
+    log(`  [checkout] 可见行1：${safeLines(firstRead.lines).slice(0, 18).join(' / ')}`);
+    log(`  [checkout] 可见行2：${safeLines(secondRead.lines).slice(0, 18).join(' / ')}`);
+    const amountFrom = (lines: string[]) => {
+      // 结算页有几个金额：商品优惠后价、打包费、配送费、红包、合计、立即支付。应付必须取“立即支付/实付/合计”。
+      const keywords = ['立即支付', '实付', '应付', '合计'];
+      for (const key of keywords) {
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i]!;
+          if (!line.includes(key)) continue;
+          const m = /(\d+(?:\.\d{1,2})?)/.exec(line.replace(/[¥￥]/g, ' '));
+          if (m) return Math.round(Number(m[1]) * 100);
+          // “合计”标签和金额可能分两行：看后面两行里纯金额
+          for (const next of lines.slice(i + 1, i + 3)) {
+            const n = /^[¥￥]?\s*(\d+(?:\.\d{1,2})?)\s*$/.exec(next.replace(/[¥￥]/g, '').trim());
+            if (n) return Math.round(Number(n[1]) * 100);
+          }
+        }
+      }
+      return null;
+    };
+    const amountFen = amountFrom(firstRead.lines);
+    const amountFen2 = amountFrom(secondRead.lines);
+    if (amountFen == null || amountFen2 == null || amountFen !== amountFen2) throw new Error('taobao_payable_unverified');
+    const itemLine = firstRead.lines.find(line => line.trim() === itemName) ?? null;
+    const quantityLine = firstRead.lines.find(line => /^(x|×)?\s*1\s*(件|份)?$/.test(line.trim())) ?? null;
+    if (itemLine && quantityLine) actualItem = {name: itemLine.trim(), spec: o.itemSpec, nodes: []};
+    log(`  [checkout] 应付=${amountFen} 商品=${itemLine ?? '未读到'} 数量行=${quantityLine ?? '未读到'}`);
+    // 费用行：读“优惠后/打包费/配送费/红包/已优惠”，按“商品原价 - 优惠 + 打包 + 配送 = 应付”核对。
+    const amountAfter = (label: string) => {
+      const idx = firstRead.lines.findIndex(line => line.includes(label));
+      if (idx < 0) return null;
+      for (const line of firstRead.lines.slice(idx, idx + 3)) {
+        const m = /[¥￥]\s*(\d+(?:\.\d{1,2})?)/.exec(line);
+        if (m) return Math.round(Number(m[1]) * 100);
+      }
+      return null;
+    };
+    const packagingFen = amountAfter('打包费');
+    const deliveryFen = amountAfter('配送费');
+    const discountFen = amountAfter('已优惠');
+    const afterDiscountFen = amountAfter('优惠后');
+    const subtotalFen = afterDiscountFen != null && discountFen != null ? afterDiscountFen + discountFen : null;
+    const reconciled = packagingFen != null && deliveryFen != null && discountFen != null && subtotalFen != null &&
+      subtotalFen - discountFen + packagingFen + deliveryFen === amountFen;
+    log(`  [checkout] 费用行 原价=${subtotalFen} 优惠=${discountFen} 打包=${packagingFen} 配送=${deliveryFen} 核对=${reconciled}`);
+    if (!reconciled) throw new Error('taobao_reconciliation_failed');
+    // 证据：结算整页顶部 24% 涂黑（收货地址/收件人/电话区域），保留门店、商品、金额和费用明细。
+    const floor = Math.round(H * 0.24);
+    const maskedPng = await sharp(firstRead.png).composite([{input: await sharp({create: {width: W, height: floor, channels: 3, background: '#121719'}}).png().toBuffer(), left: 0, top: 0}]).png().toBuffer();
+    const checkoutEvidence = await o.evidence.save(randomUUID(), 'checkout', maskedPng, safeLines(firstRead.lines).join('\n'), 'live');
+    // 商品证据：在结算页截图上定位商品名那一行，裁一条单独存证。
+    let itemEvidenceShot: Evidence | null = null;
+    try {
+      const [ix, iy] = await model.locate('taobao_instant', firstRead.png, `文字“${itemName}”`, signal);
+      const bandTop = Math.max(floor, Math.round(iy) - 120);
+      const bandH = Math.min(260, H - bandTop);
+      const band = await sharp(firstRead.png).extract({left: 0, top: bandTop, width: W, height: bandH}).png().toBuffer();
+      const bandLines = await o.model.text('taobao_instant', 'taobao_item_band',
+        '把这张截图里的可见文字按行原样输出，最多 8 行；不要编号、不要总结。',
+        {image: band, signal: activeSignal, maxImageWidth: 900, maxTokens: 260}).catch(() => '');
+      itemEvidenceShot = await o.evidence.save(randomUUID(), 'item', band, bandLines.split(/\r?\n/).filter(Boolean).slice(0, 8).join('\n'), 'live');
+    } catch { /* 定位不到商品行时，后面的身份校验会明确失败 */ }
+    if (!actualStore || !actualItem || !storeEvidence || !itemEvidenceShot) throw new Error('taobao_identity_unverified');
+    mark('采数完成', true);
+    return {checkoutSha256: checkoutEvidence.sha256, checkoutEvidence, storeEvidence, itemEvidence: itemEvidenceShot,
+      store: actualStore.name, storeAddress: actualStore.address, item: actualItem.name, itemSpec: actualItem.spec,
+      originalFen: subtotalFen, discountFen, packagingFen, deliveryFen, redPacketFen: null,
+      totalFen: amountFen, steps, rawText: JSON.stringify({lines: safeLines(firstRead.lines)}), reconciled: true};
   } catch (e) {
     log('采集异常:', (e as Error).message);
     return {error:(e as Error).message,store: null, item: null, originalFen: null, discountFen: null, packagingFen: null, deliveryFen: null, redPacketFen: null, totalFen: null, steps, rawText: null};
   } finally {
     if (cartMayHaveChanged) {
-      activeSignal=AbortSignal.timeout(45_000);
+      activeSignal=AbortSignal.timeout(120_000);
       try {
-        let nodes=await readNodes();
-        let remove=ownedCartRemoveControl(nodes,itemName,o.itemSpec);
-        if (!cartIsExplicitlyEmpty(nodes) && !remove) {
-          await requireForeground();
-          await adb(['shell','input','keyevent','KEYCODE_BACK']);
-          await sleep(800);
-          nodes=await readNodes();
-          remove=ownedCartRemoveControl(nodes,itemName,o.itemSpec);
+        await requireForeground();
+        // 判断当前是不是结算页（底栏有“立即支付/提交订单”）；是就退回商品列表，不是就在当前列表页处理。
+        let bottom = await readCropLines('cleanup-current', 0.80, 1).catch(() => [] as string[]);
+        const onCheckout = bottom.some(line => /立即支付|提交订单|确认订单/.test(line));
+        if (onCheckout) {
+          await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']);
+          await sleep(2_500);
+          bottom = await readCropLines('cleanup-after-back', 0.82, 1).catch(() => [] as string[]);
         }
-        if (remove) {
-          await requireForeground();
-          await adb(['shell','input','tap',String(Math.round(remove.left+remove.width/2)),String(Math.round(remove.top+remove.height/2))]);
-          await sleep(800);
-          nodes=await readNodes();
+        const hasOwnedItem = (lines: string[]) => lines.some(line => /去结算|到手约|共减/.test(line));
+        // 本次任务开始时已确认空车，购物车里的商品只可能是本次加购的，因此可以按减号移除。
+        for (let i = 0; i < 3 && hasOwnedItem(bottom); i++) {
+          const shot = await snap(`cleanup-remove-${i + 1}`);
+          let hit: [number, number] | null = null;
+          try { hit = await model.locate('taobao_instant', shot, '红色减号“−”按钮', activeSignal); } catch { /* 下一轮再试 */ }
+          if (!hit) break;
+          await adb(['shell', 'input', 'tap', String(Math.round(hit[0])), String(Math.round(hit[1]))]);
+          await sleep(1_800);
+          bottom = await readCropLines(`cleanup-bar-${i + 2}`, 0.82, 1).catch(() => [] as string[]);
         }
-        if (cartIsExplicitlyEmpty(nodes)) { cartMayHaveChanged=false; o.onCleanup('restored'); }
+        const empty = bottom.some(line => /起送/.test(line)) && !hasOwnedItem(bottom);
+        if (empty) { cartMayHaveChanged=false; o.onCleanup('restored'); }
       } catch { /* 未确认恢复时保留隔离状态 */ }
     }
     if (!cartMayHaveChanged) await escape();
