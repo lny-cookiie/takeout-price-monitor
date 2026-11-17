@@ -44,3 +44,4 @@ python scripts/diagrams/draw_ue_flowcharts.py
 
 审稿裁剪图、SVG/PDF/DOT 导出与 imagegen 参考图归档在 `前期调研/图表/_archive/`，不再维护。
 | `bd-acceptance.ts` | v2 验收批次：从正式 `/api/bd/runs` 逐组提交三平台比较组，保留失败与重试，核对证据哈希，统计完整组率与 P50/P90；用法 `npx tsx scripts/bd-acceptance.ts --label=A --groups=20 --input=scripts/bd-batch.example.json`。 |
+| `bd-acceptance-report.ts` | 汇总 A/B 两批验收：完整组率、平台有效率、购物车与证据核对、P50/P90 与改善幅度，并生成逐份复核清单；用法 `npx tsx scripts/bd-acceptance-report.ts --a=<A目录> --b=<B目录> --out=<报告路径>`。 |
