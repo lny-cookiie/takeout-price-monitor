@@ -93,7 +93,7 @@ function platformCard(platform,slot){
     ${detail.reconciliation?`<p class="rc-note">${esc(detail.reconciliation)}</p>`:''}
   </article>`;
 }
-function resultSummary(slots){
+function resultSummary(slots,timing){
   const valid=slots.filter(s=>s.observation?.quote_valid);
   const warnings=[];
   if(slots.length<3)warnings.push('本组只选了部分平台');
@@ -114,6 +114,7 @@ function resultSummary(slots){
     }
   }
   return `<div class="result-banner ${complete?'ok':'warn'}">${complete?'本组达到完整比较组口径':'本组未达到完整组口径'}${warnings.length?'：'+warnings.map(esc).join('；'):''}</div>
+    ${timing?`<p class="rc-note">${esc(timing)}</p>`:''}
     ${deltas.length?`<p class="rc-note">实测样本差额：${deltas.map(esc).join('；')}。会员、新客资格和优惠条件可能不同，未经核实时只能当作同城同品牌同品样本差额，不能推断平台补贴差异。</p>`:''}
     ${skew!=null?`<p class="rc-note">三平台观察时差 ${skew.toFixed(1)} 分钟。</p>`:''}`;
 }
@@ -125,7 +126,10 @@ async function loadResult(runId){
   if(!data){resultBody.innerHTML='<p class="rc-note">读取结果失败，请稍后刷新。</p>';resultPanel.hidden=false;return;}
   const slots=data.slots||[];
   resultState.textContent=slots.every(s=>['completed','interrupted','source_blocked','window_missed','cancelled'].includes(s.state))?'已完成':'进行中';
-  resultBody.innerHTML=resultSummary(slots)+`<div class="result-grid">${slots.map(s=>platformCard(UI_PLATFORM[s.platform]||s.platform,s)).join('')}</div>`;
+  const queueMs=Number(data.queueMs??NaN), executionMs=Number(data.executionMs??NaN), elapsedMs=Number(data.elapsedMs??NaN);
+  const timing=[Number.isFinite(queueMs)?`排队 ${(queueMs/1000).toFixed(1)} 秒`:null,Number.isFinite(executionMs)?`执行 ${(executionMs/1000).toFixed(1)} 秒`:null,
+    Number.isFinite(elapsedMs)?`完整耗时 ${(elapsedMs/1000).toFixed(1)} 秒`:null].filter(Boolean).join(' · ');
+  resultBody.innerHTML=resultSummary(slots,timing)+`<div class="result-grid">${slots.map(s=>platformCard(UI_PLATFORM[s.platform]||s.platform,s)).join('')}</div>`;
   resultPanel.hidden=false;
   return data;
 }
@@ -164,6 +168,10 @@ async function runPlatform(platform,payload,runId,state){
         const p2=Math.min(95,Math.round(phases.length/total*95));
         if(p2>=percent||mapped){label=mapped;percent=Math.max(percent,p2);}
       }
+      // v2 要求把“等待手机、正在进入门店、已取得报价正在恢复、需要处理”分开显示，不混成一个进度。
+      if(slot.cleanup==='quarantined'||slot.cleanup==='needs_attention')label='需要处理：购物车状态未确认';
+      else if(slot.observation?.quote_valid&&slot.state==='running')label='已取得报价，正在恢复';
+      else if(slot.state==='queued')label=phases.length?'排队等待手机':'等待手机';
       const runState=String(data.state||data.status||'');
       if(slot.state==='completed'||['interrupted','source_blocked','window_missed','cancelled'].includes(slot.state)||runState==='failed'||runState==='cancelled'){
         if(slot.state==='cancelled'){setRun(platform,'failed',percent,'已停止');addLog(`${PLATFORMS[platform].name} · 已按请求停止`);failedPlatforms.add(platform);return false;}
