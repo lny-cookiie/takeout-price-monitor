@@ -17,6 +17,8 @@ import {navigateMeituan, readMeituanSettlement} from './meituan-collect.js';
 
 export interface MeituanCollectorOptions {
   sources: AndroidSources;
+  /** 测试注入：读取当前页面全部可见文字的兜底实现（默认用 uiautomator dump）。 */
+  cartBarTexts?: () => Promise<string[]>;
   model: Pick<ModelGateway, 'status' | 'locate' | 'json'>;
   evidence: EvidenceStore;
   connect?: typeof connectAndroid;
@@ -56,6 +58,7 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
 
       // 美团底栏（购物车状态）不在 u2 可访问性树里；用系统 uiautomator 全量 dump 取文字。
       const dumpTexts = async (): Promise<string[]> => {
+        if (opts.cartBarTexts) return opts.cartBarTexts();
         const {execFile} = await import('node:child_process');
         const {promisify} = await import('node:util');
         const run = promisify(execFile);

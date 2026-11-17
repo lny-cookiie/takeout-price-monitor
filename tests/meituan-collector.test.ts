@@ -30,6 +30,7 @@ test('美团采集按实际节点核验门店、单件、金额并验证恢复',
   const device={size:async()=>({width:400,height:760}),launch:async()=>{},screenshot:async()=>image,tap:async()=>{},back:async()=>{},close:async()=>{}};
   const evidence=new EvidenceStore(await mkdtemp(join(tmpdir(),'meituan-evidence-')));
   const collector=liveMeituanCollector({sources:{get:()=>source,permitted:()=>true} as any,model:{status:{configured:true},json:async()=>({value:verifyValue}),locate:async()=>[0,0]} as any,evidence,connect:(async()=>device) as any,
+    cartBarTexts:async()=>dirty?['起送20','去结算']:phase==='uncertain'?['购物车']:['起送20'],
     semantic:(()=>semantic) as any,navigate:(async(options:any)=>{phase='store';await options.onStoreReached();phase='item';await options.onCartMutation();phase='checkout';return ['checkout'];}) as any});
   const result=await collector.collect(task,randomUUID(),AbortSignal.timeout(20_000));
   assert.equal(result.status,'partial',result.error_code??'');
