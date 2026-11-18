@@ -77,7 +77,19 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
   const adb = async (args: string[]) =>
     (await run(adbPath, ['-s', serial, ...args], {encoding: 'buffer', maxBuffer: 64 * 1024 * 1024,timeout:20_000,signal:activeSignal,windowsHide:true})).stdout;
 
-  const requireForeground = () => requireAndroidForeground(async()=>String(await adb(['shell','dumpsys','window'])), 'com.taobao.taobao', activeSignal);
+  const requireForegroundOnce = () => requireAndroidForeground(async()=>String(await adb(['shell','dumpsys','window'])), 'com.taobao.taobao', activeSignal);
+  // 快速韧性：淘宝被系统切到桌面/锁屏时，立即解锁并重新拉起，再确认前台，不让整次采集直接失败。
+  const requireForeground = async () => {
+    try { return await requireForegroundOnce(); } catch (error) {
+      if ((error as {code?:string}).code !== 'target_app_not_foreground') throw error;
+      log('  [recover] 淘宝不在前台，解锁并重新拉起');
+      await adb(['shell', 'wm', 'dismiss-keyguard']).catch(() => null);
+      await adb(['shell', 'input', 'keyevent', '224']).catch(() => null);
+      await adb(['shell', 'am', 'start', '-n', 'com.taobao.taobao/com.taobao.tao.welcome.Welcome']).catch(() => null);
+      await new Promise(r => setTimeout(r, 2_500));
+      return requireForegroundOnce();
+    }
+  };
   let treeReader:AndroidUiTreeReader|undefined;
   const readNodes = async ():Promise<U2Node[]> => {
     await requireForeground();
@@ -129,12 +141,11 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
       const left = Math.round(w * 0.60), top = Math.round(h * 0.072);
       const cw = Math.max(120, Math.round(w * 0.39)), ch = Math.max(60, Math.round(h * 0.052));
       const crop = await sharp(full).extract({left, top, width: cw, height: Math.min(ch, h - top)}).png().toBuffer();
-      const [cx, cy] = await model.locate('taobao_instant', crop, '橙色底白色“搜索”按钮', signal);
-      const x = left + Math.round(cx), y = top + Math.round(cy);
-      if (x < Math.round(w * 0.55) || x > w - 5 || y > Math.round(h * 0.16)) {
-        log(`  [orange-search] 定位越界 (${x},${y})`);
-        return false;
-      }
+      const [cx] = await model.locate('taobao_instant', crop, '橙色底白色“搜索”按钮', signal);
+      // 真机实测：搜索栏这一行的垂直中心在屏幕高度 11.3% 处；模型常把按钮定位到搜索栏上边缘（点了没反应）。
+      // 因此横向用模型/裁剪结果，纵向用标定的搜索栏中心。
+      const x = Math.min(w - 12, Math.max(Math.round(w * 0.80), left + Math.round(cx)));
+      const y = Math.round(h * 0.1132);
       await adb(['shell', 'input', 'tap', String(x), String(y)]);
       log(`  [orange-search] 点击 (${x},${y})`);
       return true;
@@ -292,17 +303,29 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 冷启动后的首页偶尔会自己跳回“推荐”页或弹活动层：点完闪购必须确认页面真的变了，再继续。
     // 页面是否切换用截图差异判断（模型读字偶发回显提示词，不适合作页面状态判据）。
     let s1 = false;
+    // 冷启动后淘宝可能直接停在闪购频道（会记住上次标签）；先判断，避免“点了没变化”被当成失败。
+    try {
+      const pre = await readCropLines('flash-precheck', 0.03, 0.30, {maxLines: 14, maxTokens: 360});
+      s1 = pre.some(line => /闪购/.test(line)) && pre.some(line => /超值外卖送到家|我的闪购|美食外卖/.test(line));
+      log(`  [flash-tab] 预检是否已在闪购频道=${s1} 行=${pre.slice(0, 5).join(' / ')}`);
+    } catch { /* 预检失败则按原流程点标签 */ }
     for (let i = 0; i < 3 && !s1; i++) {
+      // “闪购”标签位置稳定，直接用屏幕比例点击（模型定位在首页偶发 60 秒超时，会吃掉整次预算）。
       const before = await snap(`flash-before-${i + 1}`);
-      const tapped = await tapByVision('文字“闪购”', i === 0 ? 'flash-tab' : `flash-tab-${i + 1}`, {yMin: Math.round(H*0.04), yMax: Math.round(H*0.11), cropTopRatio: 0.02, cropBottomRatio: 0.13}, 1);
-      if (!tapped) continue;
-      await sleep(2_500);
+      await adb(['shell', 'input', 'tap', String(Math.round(W * 0.37)), String(Math.round(H * 0.068))]);
+      await sleep(2_200);
       const after = await snap(`flash-after-${i + 1}`);
       const mad = await screenMAD(before, after);
       s1 = mad >= 6;
-      log(`  [flash-tab] 第${i + 1}次点击后画面差异=${mad.toFixed(1)} 判定=${s1 ? '已切换' : '未切换'}`);
+      log(`  [flash-tab] 第${i + 1}次比例点击后画面差异=${mad.toFixed(1)} 判定=${s1 ? '已切换' : '未切换'}`);
       if (!s1) {
         try { const {writeFile} = await import('node:fs/promises'); await writeFile(`.runtime/tb-flash-fail-${i + 1}.png`, after); } catch { /* 诊断 */ }
+        if (i >= 1) {
+          log('  [recover] 闪购标签点击无效，重新拉起淘宝后再试');
+          await adb(['shell', 'wm', 'dismiss-keyguard']).catch(() => null);
+          await adb(['shell', 'am', 'start', '-n', 'com.taobao.taobao/com.taobao.tao.welcome.Welcome']).catch(() => null);
+          await new Promise(r => setTimeout(r, 3_000));
+        }
       }
     }
     mark('进入闪购频道', s1);
@@ -338,12 +361,15 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     };
     const looksLikeResults = (lines: string[]) => {
       const text = lines.join('\n');
-      return /综合/.test(text) && /销量/.test(text) && /速度/.test(text) && !/历史搜索|搜索发现|专属好店/.test(text);
+      const sortBar = /综合/.test(text) && /销量/.test(text) && /速度/.test(text);
+      const storeCards = lines.some(line => /月售/.test(line) && /起送/.test(line)) ||
+        lines.some(line => line.includes(brand) && /店/.test(line) && /(月售|起送)/.test(line));
+      return (sortBar || storeCards) && !/历史搜索|搜索发现|专属好店/.test(text);
     };
     let s3 = false;
     const checkResults = async (tag: string) => {
       try {
-        const lines = await readCropLines(tag, 0.04, 0.34, {maxLines: 18, maxTokens: 460});
+        const lines = await readCropLines(tag, 0.04, 0.42, {maxLines: 22, maxTokens: 560});
         const ok = looksLikeResults(lines);
         if (!ok) log(`  [results] ${tag} 未见结果页特征，行：${lines.slice(0, 10).join(' / ')}`);
         return ok;
@@ -353,53 +379,34 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
       }
     };
     if (s2 && typedBrand) {
-      const tapCalibratedSearch = async () => {
-        await adb(['shell', 'input', 'tap', String(Math.round(W * 0.86)), String(Math.round(H * 0.0975))]);
-      };
-      // 每次提交后用“截图差异”判断是否发生了页面跳转（比读文字判定稳，且不会把搜索建议下拉误判为结果页）；
-      // 只有页面没变时才继续用文字特征判断。
-      const submitAndCheck = async (tag: string, action: () => Promise<void>) => {
-        const before = await snap(`${tag}-before`);
+      // 真机实测（2026-11-18 白天）：输入品牌后页面停在“搜索建议 + 键盘”状态，
+      // 真正能进入结果页的是键盘右下角的搜索键；页面右上角橙色按钮和回车都只保持建议下拉。
+      const submitVariants: Array<[string, () => Promise<void>]> = [
+        ['键盘搜索键', async () => { await adb(['shell', 'input', 'tap', String(Math.round(W * 0.878)), String(Math.round(H * 0.935))]); }],
+        ['右上角橙色搜索按钮', async () => { await adb(['shell', 'input', 'tap', String(Math.round(W * 0.86)), String(Math.round(H * 0.095))]); }],
+        ['回车', async () => { await adb(['shell', 'input', 'keyevent', '66']); }],
+      ];
+      for (const [label, action] of submitVariants) {
+        if (s3) break;
+        const before = await snap('search-submit-before');
         await action();
-        await sleep(2_800);
-        const after = await snap(`${tag}-after`);
+        await sleep(3_200);
+        const after = await snap('search-submit-after');
         const mad = await screenMAD(before, after);
-        log(`  [results] ${tag} 画面差异=${mad.toFixed(1)}`);
-        if (mad >= 10) return true;
-        return await checkResults(tag);
-      };
-      s3 = await submitAndCheck('results-check-1', tapCalibratedSearch);
-      if (!s3) {
-        log('  [results] 点搜索按钮后页面未变化，补一次回车');
-        s3 = await submitAndCheck('results-check-2', async () => { await adb(['shell', 'input', 'keyevent', '66']); });
-      }
-      if (!s3) {
-        log('  [results] 仍未跳转，点第一条搜索建议');
-        try {
-          const shot = await snap('suggest');
-          const meta = await sharp(shot).metadata();
-          const w = meta.width ?? W, h = meta.height ?? H;
-          const top = Math.round(h * 0.05), ch = Math.round(h * 0.30);
-          const crop = await sharp(shot).extract({left: 0, top, width: w, height: ch}).png().toBuffer();
-          const [cx, cy] = await model.locate('taobao_instant', crop, `文字“${brand}”`, signal);
-          const gx = Math.round(cx), gy = top + Math.round(cy);
-          if (gy > Math.round(h * 0.07) && gy < Math.round(h * 0.38)) {
-            s3 = await submitAndCheck('results-check-3', async () => { await adb(['shell', 'input', 'tap', String(gx), String(gy)]); });
-          }
-        } catch (error) {
-          log('  [results] 搜索建议定位失败：' + (error as Error).message);
-        }
-      }
-      if (!s3) {
-        log('  [results] 兜底：视觉定位橙色搜索按钮再点一次');
-        s3 = await submitAndCheck('results-check-4', async () => { await tapOrangeSearch(); });
+        log(`  [results] 提交方式=${label} 画面差异=${mad.toFixed(1)}`);
+        if (mad >= 6) s3 = true;
+        else s3 = await checkResults(`results-check-${label === '键盘搜索键' ? 1 : label === '右上角橙色搜索按钮' ? 2 : 3}`);
       }
     }
     if (s3) {
       // 截图差异可能只是“搜索建议下拉”展开，不是结果页；识别到建议下拉先按返回收起，再走频道列表备用路径。
-      const topLines = await readCropLines('suggest-guard', 0.04, 0.32, {maxLines: 16, maxTokens: 420}).catch(() => [] as string[]);
+      // 搜索结果页顶部也有“闪购 超值外卖送到家”这一行，不能只凭品牌出现次数判断建议下拉；
+      // 结果页一定带排序栏（综合/销量/速度）或门店信息（月售/起送），建议下拉则没有。
+      const topLines = await readCropLines('suggest-guard', 0.04, 0.42, {maxLines: 22, maxTokens: 560}).catch(() => [] as string[]);
+      const hasSortBar = ['综合', '销量', '速度'].every(t => topLines.some(line => line.includes(t)));
+      const hasStoreInfo = topLines.some(line => /月售/.test(line)) || topLines.some(line => /起送/.test(line));
       const suggestMarkers = topLines.filter(line => line.includes(brand)).length >= 2 && topLines.some(line => /超值外卖送到家/.test(line));
-      const storeCardMarkers = topLines.some(line => /月售/.test(line) && /起送/.test(line));
+      const storeCardMarkers = hasSortBar || hasStoreInfo;
       if (suggestMarkers && !storeCardMarkers) {
         log('  [results] 判定为搜索建议下拉，按返回收起后改走频道门店列表');
         await adb(['shell', 'input', 'keyevent', '4']);
@@ -484,7 +491,15 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
       const brandLines = await readCropLines('store-brand-lines', 0.12, 0.50, {maxLines: 16, maxTokens: 600}).catch(() => [] as string[]);
       log(`  [store] 品牌页可见行：${brandLines.slice(0, 14).join(' / ')}`);
       const clean = (line: string) => line.replace(/>+\s*$/g, '').replace(/\s*堂食店\s*$/g, '').trim();
-      const storeName = (brandLines.find(line => line.includes(brand) && /店/.test(line) && line.length < 60) ?? null) && clean(brandLines.find(line => line.includes(brand) && /店/.test(line) && line.length < 60)!);
+      // 门店名可能因为拍照/换行被拆成两行（例如“麦当劳&麦咖啡(天津南开大学西...”+“堂食店>”），
+      // 把含品牌的那一行和后面一两行拼起来，直到出现“店”字为止。
+      let storeName: string | null = null;
+      for (let i = 0; i < brandLines.length && !storeName; i++) {
+        if (!brandLines[i]!.includes(brand)) continue;
+        let candidate = brandLines[i]!;
+        for (let j = i + 1; j <= i + 2 && j < brandLines.length && !/店/.test(candidate); j++) candidate += ' ' + brandLines[j]!;
+        if (/店/.test(candidate) && candidate.length < 80) storeName = clean(candidate);
+      }
       const addressLine = (brandLines.find(line => /天津/.test(line) && /(路|街|道|号)/.test(line)) ?? null) && clean(brandLines.find(line => /天津/.test(line) && /(路|街|道|号)/.test(line))!);
       const cityKey = normalize(o.city).replace(/市$/, '');
       const nameOk = !!storeName && normalize(storeName).includes(normalize(brand));
@@ -519,10 +534,12 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     const s5 = s4 && await tapByVision('文字“搜一搜”的搜索框', 'shopsearch', {yMin: Math.round(H*0.02), yMax: Math.round(H*0.16), cropTopRatio: 0.01, cropBottomRatio: 0.18});
     mark('打开店内搜索', !!s5);
 
-    // 6 店内搜单品
+    // 6 店内搜单品：真机实测店内搜索是“边输入边出结果”，不需要再点搜索键或回车；
+    // 之前多点一次提交会把页面带进建议/空状态，导致后面的商品行扫描全部落空。
     const typedItem = s5 && await typeChinese(itemName);
-    await sleep(1800);
-    const s6 = s5 && (await tapOrangeSearch());
+    await sleep(2_800);
+    const s6 = s5 && typedItem;
+    if (s6) log('  [item-search] 已输入单品名，等待店内搜索结果自动刷新');
     mark('店内搜单品', !!s6, `${itemName} 注入=${typedItem}`);
 
     // 7 点目标单品加号。用标定的相对比例坐标。
@@ -535,10 +552,10 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     if (s6) {
       if (!cartEmptyPrecheck) throw new Error('cart_preflight_unverified');
       try { const {writeFile} = await import('node:fs/promises'); await writeFile('.runtime/tb-item-list.png', await snap('item-list-dbg')); } catch { /* 诊断 */ }
-      // 目标单品行通常排在 3 个套餐之后、首屏看不到；先大幅上滑一次，减少“找按钮-读行标题”的轮数（每次约 10 秒）。
-      await adb(['shell', 'input', 'swipe', String(Math.round(W / 2)), String(Math.round(H * 0.74)), String(Math.round(W / 2)), String(Math.round(H * 0.28)), '360']);
-      await sleep(1_500);
+      // 店内搜索结果通常第一屏就能看到目标单品行，先直接扫描；找不到再滚动（滚动会把目标行移走，反而浪费轮数）。
+      const plusScanStart = Date.now();
       for (let attempt = 0; attempt < 4 && !s7; attempt++) {
+        if (Date.now() - plusScanStart > 55_000) { log('  [plus] 扫描超预算，停止'); break; }
         const shot = await snap(`find-plus-${attempt + 1}`);
         let hit: [number, number] | null = null;
         try { hit = await model.locate('taobao_instant', shot, '橙色圆形“+”按钮', signal); } catch (error) { log(`  [plus] 定位失败：${(error as Error).message}`); }
@@ -616,10 +633,18 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
       const png = await snap(tag);
       const content = await o.model.text('taobao_instant', 'taobao_checkout_lines',
         '把这张结算页截图里所有可见文字按行原样输出，最多 30 行；金额、商品名、门店名都要按原样保留。不要总结、不要判断。',
-        {image: png, signal: activeSignal, maxImageWidth: 800, maxTokens: 650});
+        {image: png, signal: activeSignal, maxImageWidth: 900, maxTokens: 750});
       return {lines: content.split(/\r?\n/).map(v => v.trim()).filter(Boolean), png};
     };
-    const firstRead = await readCheckoutLines('checkout-read-1');
+    // 本地小模型偶尔把结算页读成状态栏数字（真机：可见行1 只有时间/网速）。读到这种结果就重新截一次再读，
+    // 不把“没读出来”误判成金额不一致。
+    const meaningful = (lines: string[]) => lines.filter(line => /[\u4e00-\u9fa5]/.test(line)).length >= 5;
+    let firstRead = await readCheckoutLines('checkout-read-1');
+    for (let attempt = 0; attempt < 2 && !meaningful(firstRead.lines); attempt++) {
+      log(`  [checkout] 首次整页读取无效，重试第 ${attempt + 1} 次`);
+      await sleep(700);
+      firstRead = await readCheckoutLines(`checkout-read-${attempt + 2}`);
+    }
     // 第二次只读底部金额栏（约 2-3 秒），不用整页再读一遍，给 240 秒预算留余量。
     const bottomLines = await readCropLines('checkout-read-2', 0.72, 1).catch(() => [] as string[]);
     const secondRead = {lines: bottomLines, png: firstRead.png};
