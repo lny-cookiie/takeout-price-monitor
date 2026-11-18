@@ -8,6 +8,7 @@ import type { AndroidSource } from './android-source.js';
 import type { U2Semantic, U2Node } from './meituan-semantic.js';
 import { nodeLabel } from './meituan-semantic.js';
 import { createPageAsserter, type MeituanPage, type PageAsserter } from './page-assert.js';
+import {CAPTCHA_PATTERN,CaptchaEncountered} from './captcha.js';
 
 export interface MeituanQuote {
   store: string | null;
@@ -280,6 +281,9 @@ export async function navigateMeituan(options: MeituanFlowOptions): Promise<stri
       await semantic.tap(input, '搜索输入框');
       const leftover = nodeLabel(input).trim();
       console.log('[meituan] 搜索输入框内容', JSON.stringify(leftover), '目标品牌', brand);
+      // 真机证据（2026-11-18）：搜索页出现“请输入图片中的内容”，这是图片验证码的输入框，
+      // 不是普通搜索框。绝不往验证码里输入内容，立刻停止并交给人工处理。
+      if (CAPTCHA_PATTERN.test(leftover)) throw new CaptchaEncountered();
       if (leftover.includes(brand)) {
         // 输入框已经是目标品牌：直接回车搜索，跳过键盘输入，避免拼串和输入丢失。
         await options.pressEnter?.();
