@@ -318,9 +318,27 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         // 采集从首页/外卖频道等原生页面开始，用 u2 即时快照；读到 WebView 页面会自动回落到 dump。
         await device.setTreeMode?.('u2').catch(()=>undefined);
         // 手机可能停在门店页/详情页/结算页，复用这些状态会让后续步骤错乱；每次采集强制重启到首页。
-        if (!task.jdOrigin) {
+        {
           await device.launch(true);
-          await wait(1_200,undefined,{signal});
+          await wait(1_800, undefined, {signal});
+          // 京东被强杀后重新启动仍可能恢复到搜索页（真机复现两次）：用前台 Activity 判断，
+          // 处在搜索/详情等子页面就按返回键退出，直到回首页或次数用尽。
+          const adbBin = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+          const focusOf = async () => {
+            try {
+              const {execFile} = await import('node:child_process');
+              const {promisify} = await import('node:util');
+              const run = promisify(execFile);
+              const out = await run(adbBin, ['-s', source.device, 'shell', 'dumpsys', 'window'], {timeout: 10_000, windowsHide: true, encoding: 'utf8'});
+              return String(out.stdout);
+            } catch { return ''; }
+          };
+          let focus = await focusOf();
+          for (let i = 0; i < 3 && /ChannelSearchActivity|DetailActivity|WebActivity|SearchActivity/.test(focus); i++) {
+            await device.back().catch(() => null);
+            await wait(800, undefined, {signal});
+            focus = await focusOf();
+          }
         }
         stepEnd();
         const query=task.jdOrigin?.brand ?? (source.searchBy==='brand' ? store.brand : store.name);
