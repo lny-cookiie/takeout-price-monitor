@@ -493,6 +493,26 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
             await tapPointRef!(minus.x, minus.y);
             await new Promise(r => setTimeout(r, 1_800));
           }
+          if (!restored) {
+            // 兜底：底栏文字读不到时，从门店页右上角“…”进购物车页核对目标店是否还列着商品。
+            // 购物车页没有目标门店分组 = 本次加购已移除；这里只读页面文字，不点任何“全选/结算”按钮。
+            try {
+              const more = await semantic!.find(n => /更多|更多选项/.test(nodeLabel(n)), 1_500).catch(() => null);
+              if (more) await semantic!.tap(more, '更多菜单');
+              await new Promise(r => setTimeout(r, 1_200));
+              const cartEntry = await semantic!.find(n => nodeLabel(n).trim() === '购物车', 2_500).catch(() => null);
+              if (cartEntry) {
+                await semantic!.tap(cartEntry, '购物车入口');
+                await semantic!.waitStable(4);
+                const labels = (await semantic!.read()).map(n => nodeLabel(n).trim());
+                const targetListed = labels.some(l => l.includes(brand) && /店/.test(l));
+                console.log('[meituan] 清理兜底购物车页核对', JSON.stringify({targetListed, sample: labels.filter(l => /麦当劳|购物车/.test(l)).slice(0, 6)}));
+                await semantic!.back();
+                await semantic!.waitStable(2);
+                if (!targetListed) { restored = true; }
+              }
+            } catch { /* 兜底失败保持隔离 */ }
+          }
           if (restored) { cartMayHaveChanged = false; cleanup = 'restored'; }
         } catch { note('cleanup','购物车状态未确认，需要人工核对'); }
       }

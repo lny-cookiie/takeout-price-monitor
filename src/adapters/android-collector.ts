@@ -404,8 +404,46 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             nodes=await screen.waitFor(['searchValue','searchSubmit']);
             await screen.tap('searchSubmit',nodes);
           }
-          nodes=await screen.waitFor(['result']);
-          await screen.tap('result',nodes);
+          // 京东搜索有时只弹出建议列表而不提交搜索（真机失败截图 .runtime/jd-fail-page_not_ready.png 可见
+          // 输入框已填品牌、下方全是建议、顶部有红色“搜索”按钮）。此时回车或点顶部搜索按钮再等结果页。
+          // 京东搜索有时只弹出建议列表而不进入结果页（真机截图 .runtime/jd-fail-page_not_ready.png：
+          // 输入框已填品牌、下方是建议、顶部有红色“搜索”按钮，建议里还带直属门店卡）。
+          // 依次尝试：回车 → 点顶部搜索按钮 → 点建议里的门店卡直接进店。
+          let directStore=false;
+          try {
+            nodes=await screen.waitFor(['result']);
+          } catch (e) {
+            if (!(e instanceof CollectionError && e.code==='page_not_ready')) throw e;
+            const {execFile} = await import('node:child_process');
+            const {promisify} = await import('node:util');
+            const run = promisify(execFile);
+            const adbBin = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+            await run(adbBin, ['-s', source.device, 'shell', 'input', 'keyevent', '66'], {timeout: 8000, windowsHide: true}).catch(() => null);
+            await wait(1_200, undefined, {signal});
+            try {
+              nodes=await screen.waitFor(['result']);
+            } catch (e2) {
+              if (!(e2 instanceof CollectionError && e2.code==='page_not_ready')) throw e2;
+              const probe=await screen.nodes(true).catch(()=>[] as UiNode[]);
+              const searchButton=probe.find(n=>String(n.attrs.text??'').trim()==='搜索' && n.bounds.width>40);
+              if (searchButton) {
+                await device!.tap(searchButton.bounds.left+searchButton.bounds.width/2, searchButton.bounds.top+searchButton.bounds.height/2);
+                await wait(1_500, undefined, {signal});
+              }
+              try {
+                nodes=await screen.waitFor(['result']);
+              } catch (e3) {
+                if (!(e3 instanceof CollectionError && e3.code==='page_not_ready')) throw e3;
+                const cards=await screen.nodes(true).catch(()=>[] as UiNode[]);
+                const card=cards.filter(n=>{const t=String(n.attrs.text??'').trim();return t.includes(query)&&/店/.test(t)&&n.bounds.width>300&&n.bounds.top>200;})
+                  .sort((a,b)=>a.bounds.top-b.bounds.top)[0];
+                if (!card) throw e3;
+                await device!.tap(card.bounds.left+card.bounds.width/2, card.bounds.top+card.bounds.height/2);
+                directStore=true;
+              }
+            }
+          }
+          if (!directStore) await screen.tap('result',nodes);
           nodes=await screen.waitFor(['store','address']);
           const shopNodes=[screen.selector('store',nodes)!,screen.selector('address',nodes)!];
           await unavailability(nodes);
