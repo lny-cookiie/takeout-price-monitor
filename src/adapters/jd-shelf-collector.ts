@@ -320,6 +320,16 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
   }
   const initial=searchEntry ? [] : await stage(emit,'launch',async()=>{
     if(takeoutEntry)return {value:takeoutEntry,data:{reusedHome:true,entryState:'takeout_home',entryActions:[]}};
+    // 京东会恢复上次停留的页面（真机遇到过停在搜索页）：直接 launch 只会把旧页面带回前台，
+    // 导致首页等待超时并报 page_not_ready。先按返回键退回首页，再重新拉起。
+    if (!homeEntry&&!categoryEntry){
+      for (let i=0;i<3;i++) {
+        await screen.device.back().catch(()=>null);
+        await wait(600,undefined,{signal});
+        const probe=await screen.nodes(true).catch(()=>[] as UiNode[]);
+        if (isTakeoutHome(probe)||screen.selector('home',probe,false)||screen.selector('channel',probe,false)) break;
+      }
+    }
     if (!homeEntry&&!categoryEntry) await screen.device.launch(Boolean(pilot));
     const actions:string[]=[];
     if(src.channel||src.entryCategory){
