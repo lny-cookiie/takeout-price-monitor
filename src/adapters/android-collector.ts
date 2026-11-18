@@ -319,10 +319,6 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         await device.setTreeMode?.('u2').catch(()=>undefined);
         // 手机可能停在门店页/详情页/结算页，复用这些状态会让后续步骤错乱；每次采集强制重启到首页。
         {
-          await device.launch(true);
-          await wait(1_800, undefined, {signal});
-          // 京东被强杀后重新启动仍可能恢复到搜索页（真机复现两次）：用前台 Activity 判断，
-          // 处在搜索/详情等子页面就按返回键退出，直到回首页或次数用尽。
           const adbBin = process.env.MIDSCENE_ADB_PATH ?? 'adb';
           const focusOf = async () => {
             try {
@@ -333,11 +329,20 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
               return String(out.stdout);
             } catch { return ''; }
           };
-          let focus = await focusOf();
-          for (let i = 0; i < 3 && /ChannelSearchActivity|DetailActivity|WebActivity|SearchActivity/.test(focus); i++) {
+          const before = await focusOf();
+          const wrongApp = !!before && !/com\.jingdong\.app\.mall/.test(before);
+          const subPage = /ChannelSearchActivity|DetailActivity|WebActivity|SearchActivity/.test(before);
+          // 京东会恢复上次停留的子页面或仍停在其它应用：这两种情况必须重启；明确在前台首页则复用。
+          if (!task.jdOrigin || wrongApp || subPage) {
+            await device.launch(true);
+            await wait(1_800, undefined, {signal});
+          }
+          // 启动后若仍处在搜索/详情/WebView 子页面，按返回键退回首页（最多 3 次）。
+          let after = await focusOf();
+          for (let i = 0; i < 3 && /ChannelSearchActivity|DetailActivity|WebActivity|SearchActivity/.test(after); i++) {
             await device.back().catch(() => null);
             await wait(800, undefined, {signal});
-            focus = await focusOf();
+            after = await focusOf();
           }
         }
         stepEnd();
@@ -360,7 +365,17 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
         };
         let nodes:UiNode[], shopProof:Evidence;
         if (task.jdOrigin && jd) {
-          const verified=await jd.openJdStore(screen,task.jdOrigin,attemptId,signal,model,evidenceStore,emit,true);
+          let verified;
+          try {
+            verified=await jd.openJdStore(screen,task.jdOrigin,attemptId,signal,model,evidenceStore,emit,true);
+          } catch (e) {
+            if (!(e instanceof CollectionError && e.code==='page_not_ready')) throw e;
+            try { const shot=await device!.screenshot(signal); const {writeFile}=await import('node:fs/promises'); await writeFile('.runtime/jd-fail-page_not_ready.png', shot); } catch { /* 诊断截图失败忽略 */ }
+            emit?.({phase:'launch_retry',state:'started'});
+            await device!.launch(true);
+            await wait(3_000,undefined,{signal});
+            verified=await jd.openJdStore(screen,task.jdOrigin,attemptId,signal,model,evidenceStore,emit,true);
+          }
           if (!task.specified && digest(verified.store)!==digest(store)) throw new CollectionError('store_identity_changed','blocked');
           if(task.specified){store=verified.store;vars.store=store.name;vars.address=store.address;}
           nodes=verified.nodes;

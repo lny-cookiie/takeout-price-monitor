@@ -175,8 +175,9 @@ export function checkResult(task: Task, r: AttemptResult): void {
         normalize(actual.store.brand)!==normalize(task.live.target.supply.store.brand) ||
         normalize(actual.item.name)!==normalize(task.live.target.supply.item.name) || itemGate(task.live.target.supply,actual) ||
         !mapping || mapping.status!=='verified' || mapping.candidate.platform!==task.platform || mapping.candidate.entry!==task.entry_point ||
-        mapping.targetId!==resolved.target.id || mapping.targetRevision!==resolved.target.revision || digest(mapping.candidate.supply)!==digest(actual))
+        mapping.targetId!==resolved.target.id || mapping.targetRevision!==resolved.target.revision)
         throw new CollectionError('resolved_target_mismatch');
+      // 按 v2 规则允许同城同品牌不同分店，必须展示实际分店；分店差异体现在 observation 的实际门店名和地址里。
       if (['success','partial'].includes(r.status)) {
         const details=r.observation?.details, store=details?.storeEvidence, item=details?.itemEvidence;
         if (!store || !item || store.page_stage!=='store' || item.page_stage!=='item' || store.id===item.id ||

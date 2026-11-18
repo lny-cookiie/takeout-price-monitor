@@ -938,7 +938,19 @@ export async function scanJdShelf(task:Task,attemptId:string,signal:AbortSignal,
     });
     device=await stage(journal,'device_connect',async()=>({value:await connect(source,signal)}));
     const screen=new ReviewedScreen(device,source,{query:input.brand,store:input.storeName,address:input.businessAddress ?? ''},signal);
-    const found=await openJdStore(screen,input,attemptId,signal,model,evidenceStore,journal,true);
+    let found;
+    try {
+      found=await openJdStore(screen,input,attemptId,signal,model,evidenceStore,journal,true);
+    } catch (e) {
+      if (!(e instanceof CollectionError && e.code==='page_not_ready')) throw e;
+      // 冷启动后首页控件偶尔迟迟读不到（真机同组首跑 30 秒 26 次读屏仍失败）：重启一次再等一轮。
+      try { const shot=await device!.screenshot(signal); const {writeFile}=await import('node:fs/promises'); await writeFile('.runtime/jd-fail-page_not_ready.png', shot); } catch { /* 诊断截图失败忽略 */ }
+      journal({phase:'launch_retry',state:'started'});
+      await device!.launch(true);
+      await wait(3_000,undefined,{signal});
+      found=await openJdStore(screen,input,attemptId,signal,model,evidenceStore,journal,true);
+      journal({phase:'launch_retry',state:'succeeded'});
+    }
     proof=found.evidence;
     if (source.jdShelf?.pilot?.directSingle) {
       const selected=await stage(journal,'direct_single',async()=>{
