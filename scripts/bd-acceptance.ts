@@ -16,6 +16,8 @@ const args = Object.fromEntries(process.argv.slice(2).filter(a => a.startsWith('
 }));
 const label = args.label ?? 'A';
 const groups = Number(args.groups ?? 20);
+// 组之间冷却，降低美团风控触发概率；验证码一旦出现批次立即停止，等人处理。
+const cooldownMs = Number(args.cooldown ?? process.env.TAKEOUT_ACCEPTANCE_COOLDOWN_MS ?? 120_000);
 const inputPath = args.input ?? 'scripts/bd-batch.example.json';
 const outRoot = resolve(args.dir ?? '.runtime/acceptance');
 const platformId = (value: string): 'jd' | 'meituan' | 'taobao_instant' | null => {
@@ -135,14 +137,19 @@ for (let round = 1; round <= groups; round++) {
     await appendFile(join(dir, 'rows.jsonl'), JSON.stringify(rows.at(-1)) + '\n');
     console.log(`第 ${round}/${groups} 组 ${groupComplete ? '完整成功' : '未达完整'}：${(elapsedMs / 1000).toFixed(0)}s，有效 ${valid.length}/${plan.platforms.length}`);
     const blocked = slotRows.some(r => ['quarantined', 'needs_attention'].includes(String(r.cleanup)) || /captcha|access_restricted|rate_limited|source_blocked/.test(String(r.error ?? '')));
-    if (blocked) { console.log('检测到购物车隔离或访问限制，停止批次并保留现场'); break; }
+    if (blocked) { console.log('检测到购物车隔离或访问限制（含验证码/风控），停止批次并保留现场'); break; }
+    try {
+      const ws = await (await fetch(base + '/api/workspace')).json() as {platforms?: {id: string; status: string}[]};
+      const paused = (ws.platforms ?? []).filter(p => plan.platforms.includes(p.id as never) && p.status !== 'ready_for_defined_scope');
+      if (paused.length) { console.log('平台被暂停，停止批次：', paused.map(p => `${p.id}:${p.status}`).join(', ')); break; }
+    } catch { /* 服务重启瞬时不可用时继续下一组 */ }
   } catch (error) {
     rows.push({round, cold, runId, elapsedMs: Date.now() - submitAt, groupComplete: false, error: (error as Error).message, slots: []});
     await appendFile(join(dir, 'rows.jsonl'), JSON.stringify(rows.at(-1)) + '\n');
     console.log(`第 ${round} 组提交或等待失败：${(error as Error).message}`);
     break;
   }
-  await delay(cold ? 3_000 : 5_000);
+  if (round < groups) { console.log(`冷却 ${(cooldownMs / 1000).toFixed(0)} 秒后再跑下一组（降低风控触发）`); await delay(cooldownMs); }
 }
 const complete = rows.filter(r => r.groupComplete);
 const times = complete.map(r => Number(r.elapsedMs)).sort((a, b) => a - b);

@@ -11,6 +11,7 @@ import type {EvidenceStore} from '../infra/evidence.js';
 import {createU2Semantic, nodeLabel} from './meituan-semantic.js';
 import type {U2Semantic,U2Node} from './meituan-semantic.js';
 import {cartIsExplicitlyEmpty,cartLooksEmpty,ownedCartRemoveControl} from './cart-safety.js';
+import {looksLikeCaptcha,CaptchaEncountered} from './captcha.js';
 import {observedStore,observedStoreName,observedAddressNode,observedItem,observedSingleBasket,payableEvidenceNodes} from './observed-identity.js';
 import {digest,normalize} from '../domain/competition.js';
 import {navigateMeituan, readMeituanSettlement} from './meituan-collect.js';
@@ -92,6 +93,11 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
         const hasContent = lines.some(line => /到手约|共减|去结算/.test(line));
         return {empty: hasMin && !hasContent, lines, hasMin, hasContent};
       };
+      // 风控优先：任何阶段读到验证码/滑块字样，立刻停止且不做任何点击，交给人工处理。
+      const assertNoCaptcha = async () => {
+        const labels = (await semantic?.read().catch(() => [] as U2Node[]) ?? []).map(n => nodeLabel(n).trim());
+        if (looksLikeCaptcha(labels)) throw new CaptchaEncountered();
+      };
 
       try {
         emit?.({phase: 'connect', state: 'started'});
@@ -152,6 +158,7 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
           brand,
           itemName,
           onStoreReached: async () => {
+            await assertNoCaptcha();
             const menuNodes=await semantic!.read();
             actualStore=observedStore(menuNodes,brand,live.target.supply.store.city);
             if(!actualStore){
@@ -169,19 +176,26 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
                   address=nodeLabel(addressNode).trim();
                   storeAddressProof=await captureNodes([addressNode],'store_address');
                 }
-                const menuTab=await semantic!.find(n=>nodeLabel(n).trim()==='点菜',3_000).catch(()=>null);
-                if(menuTab){
+                // 点菜页加载慢或标签点击被忽略时重试：最多点 3 次“点菜”，每次再等页面出现菜单特征。
+                let onMenu=false;
+                for(let attempt=0;attempt<3 && !onMenu;attempt++){
+                  const menuTab=await semantic!.find(n=>nodeLabel(n).trim()==='点菜',3_000).catch(()=>null);
+                  if(!menuTab) throw new Error('store_menu_tab_missing');
                   await semantic!.tap(menuTab,'点菜标签');
-                  // 等点菜页真正加载出来：点菜页有商品行（选套餐/一件即送/神券价），商家页有“网友探店/堂食菜品”。
-                  let onMenu=false;
-                  for(let i=0;i<6 && !onMenu;i++){
+                  for(let i=0;i<5 && !onMenu;i++){
                     await semantic!.waitStable(3);
                     const labels=(await semantic!.read()).map(n=>nodeLabel(n).trim());
-                    onMenu=labels.some(l=>/选套餐|一件即送|神券价|起送\d|到手约/.test(l)) && !labels.some(l=>/网友探店|堂食菜品|门面/.test(l));
-                    if(!onMenu) await new Promise(r=>setTimeout(r,800));
+                    // 不同门店模板的商品行文字不一样（有的只有“月售/神抢手/超值多人餐”，没有“选套餐”），
+                    // 用“点菜+商家两个标签存在 + 出现商品/营销文字 + 不是商家页”组合判定。
+                    const hasTabs=labels.includes('点菜') && labels.includes('商家');
+                    const hasMenuText=labels.some(l=>/月售|神抢手|超值多人餐|大堡口福|选套餐|一件即送|起送\d|到手约|¥/.test(l));
+                    const isMerchantPage=labels.some(l=>/网友探店|堂食菜品|门面|亮证经营/.test(l));
+                    onMenu=hasTabs && hasMenuText && !isMerchantPage;
+                    if(!onMenu) await new Promise(r=>setTimeout(r,700));
                   }
-                  if(!onMenu) throw new Error('store_menu_not_reached');
-                } else throw new Error('store_menu_tab_missing');
+                  if(!onMenu) console.log(`[meituan] 第${attempt+1}次点“点菜”后仍未看到菜单，重试`);
+                }
+                if(!onMenu) throw new Error('store_menu_not_reached');
               }
               actualStore={name:named.name,address,nodes:[named.node]};
             }
@@ -223,12 +237,25 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
             if(!cartEmptyPrecheck) throw new Error('cart_preflight_unverified');
           },
           onCartMutation: async () => {
+            await assertNoCaptcha();
             // 空车前置条件在门店页已经确认；商品列表页读不到购物车栏，不能在这里重新猜。
             if (cartEmptyPrecheck !== true) throw new Error('cart_preflight_unverified');
             cartMayHaveChanged = true;
             cleanup = 'quarantined';
           },
-          searchText: async (text: string) => { await (device as any).search?.(text, signal, true); },
+          searchText: async (text: string) => {
+            // 美团搜索页会保留上一次关键词（真机遇到过“一碗牛·清炖牛肉”残留在输入框），
+            // 先用退格清空，再用 yadb 注入品牌词并回车提交；失败再退回 Midscene 的输入实现。
+            try {
+              for (let i = 0; i < 25; i++) await adbShell(['shell', 'input', 'keyevent', '67']);
+              const escaped = text.replace(/'/g, "'\\''");
+              await adbShell(['shell', `app_process -Djava.class.path=/data/local/tmp/yadb /data/local/tmp com.ysbing.yadb.Main -keyboard '${escaped}'`]);
+              await new Promise(r => setTimeout(r, 700));
+              await adbShell(['shell', 'input', 'keyevent', '66']);
+            } catch {
+              await (device as any).search?.(text, signal, true);
+            }
+          },
           // 搜索输入框会保留上一次关键词；用键盘退格清空，避免拼成“板烧鸡腿堡麦当劳”。
           clearSearchInput: async () => {
             const {execFile} = await import('node:child_process');
@@ -256,6 +283,7 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
 
         // 读结算页
         emit?.({phase: 'checkout', state: 'started'});
+        await assertNoCaptcha();
         try {
           const {writeFile} = await import('node:fs/promises');
           await writeFile('.runtime/mt-checkout-page.png', await device.screenshot(signal));
@@ -450,9 +478,16 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
           await semantic.back();
           await new Promise(r => setTimeout(r, 1_500));
           let restored = false;
-          for (let attempt = 0; attempt < 3 && !restored; attempt++) {
+          for (let attempt = 0; attempt < 4 && !restored; attempt++) {
             const state = await cartBarState().catch(() => null);
             if (state?.empty) { restored = true; break; }
+            // 底栏既没有“起送”也没有“到手约/去结算”，说明当前不在门店页（可能停在结算页/搜索页），
+            // 先按返回回到门店页再判断，不要盲目找减号。
+            if (!state?.hasMin && !state?.hasContent) {
+              await semantic.back();
+              await new Promise(r => setTimeout(r, 1_400));
+              continue;
+            }
             const minus = visualLocateRef ? await visualLocateRef('黄色圆形“−”按钮').catch(() => null) : null;
             if (!minus) { await semantic.back(); await new Promise(r => setTimeout(r, 1_200)); continue; }
             await tapPointRef!(minus.x, minus.y);
