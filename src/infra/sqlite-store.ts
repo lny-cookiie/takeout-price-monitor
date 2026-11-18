@@ -1,11 +1,41 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { checkResult, TENANT, validateTask, type Task, type Slot, type Platform, type AttemptResult, type Observation, type AttemptStep, type StepUpdate } from '../domain/contracts.js';
 import type { CollectionStore, RunInfo, Schedule, Snapshot, Claimed, Event } from '../application/ports.js';
 
 type Row = Record<string, unknown>;
 const json = <T>(v: unknown): T => JSON.parse(String(v)) as T;
 const accountKey = (t: Task) => `account:${t.platform}:${t.account_ref}`;
+/** 失败知识采集：每次失败/异常都追加一条机器可读记录，供知识库整理与自进化复盘使用。
+ *  只记录结构化事实（平台、错误码、清理状态、最近步骤），不记录页面隐私内容；不删除任何历史。 */
+function recordAttemptKnowledge(task: Task, result: AttemptResult): void {
+  try {
+    if (process.env.NODE_TEST_CONTEXT || process.env.TAKEOUT_DISABLE_KNOWLEDGE === '1') return;
+    if (result.status === 'success') return;
+    const dir = '.runtime/knowledge';
+    mkdirSync(dir, { recursive: true });
+    const record = {
+      at: new Date().toISOString(),
+      platform: task.platform,
+      account_ref: task.account_ref,
+      device_ref: task.device_ref,
+      run_id: task.run_id,
+      slot_id: task.slot_id,
+      status: result.status,
+      error_code: result.error_code ?? null,
+      cleanup: result.cleanup,
+      evidence_id: result.evidence?.id ?? null,
+      steps: (result.trace ?? []).slice(-8).map((step) => ({
+        phase: step.phase,
+        note: String(step.note ?? '').slice(0, 160),
+      })),
+    };
+    appendFileSync(join(dir, 'attempts.jsonl'), JSON.stringify(record) + '\n', 'utf8');
+  } catch { /* 采集失败不影响主流程 */ }
+}
+
 const deviceKey = (t: Task) => `device:${t.device_ref}`;
 const safeStepText=(value:string)=>value.slice(0,500).replace(/https?:\/\/\S+/gi,'[链接已隐藏]')
   .replace(/(?<!\d)1[3-9]\d{9}(?!\d)/g,'[手机号已隐藏]').replace(/<[^>]*>/g,'');
@@ -182,6 +212,7 @@ export class SqliteStore implements CollectionStore {
       const pause=quarantine || ['captcha_required','access_restricted','rate_limited'].includes(result.error_code ?? '');
       const retry=pause ? null : retryAt;
       this.db.prepare('UPDATE attempts SET result_json=? WHERE id=?').run(JSON.stringify(result),aid);
+      recordAttemptKnowledge(task,result);
       this.db.prepare('UPDATE slots SET state=?,result_json=?,next_attempt_at=? WHERE id=?').run(retry ? 'queued' : 'completed',JSON.stringify(result),retry,task.slot_id);
       const insert=this.db.prepare("INSERT INTO slots(id,run_id,platform,state,due_at,deadline_at,task_json) VALUES(?,?,?,'queued',?,?,?)");
       for (const t of following) {

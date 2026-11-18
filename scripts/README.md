@@ -47,3 +47,10 @@ python scripts/diagrams/draw_ue_flowcharts.py
 | `bd-acceptance-report.ts` | 汇总 A/B 两批验收：完整组率、平台有效率、购物车与证据核对、P50/P90 与改善幅度，并生成逐份复核清单；用法 `npx tsx scripts/bd-acceptance-report.ts --a=<A目录> --b=<B目录> --out=<报告路径>`。 |
 | `bd-review-evidence.ts` | 逐份复核有效报价：下载结算/门店/商品证据、核对哈希、用 Windows OCR 独立识读页面文字，输出人工复核清单；用法 `npx tsx scripts/bd-review-evidence.ts --runs=<id1,id2>` 或 `--batch=<批次目录>`。 |
 | `freeze-baseline.ts` | 冻结验收基线：记录代码提交、构建产物与配置哈希、模型与设备状态，并用 VACUUM INTO 生成数据库一致性副本；用法 `npx tsx scripts/freeze-baseline.ts --label=A`。工作区不干净时退出码为 2，不能用于正式验收。 |
+
+## 失败知识库
+
+- 每次真机采集失败/异常都会自动追加到 `.runtime/knowledge/attempts.jsonl`（结构化事实：平台、错误码、清理状态、最近步骤；不含页面隐私）。
+- `npx tsx scripts/knowledge-report.ts [--platform=taobao_instant]` 查看失败汇总、最近记录，以及哪些错误码还没有整理成经验条目。
+- 整理后的经验统一写在 `前期调研/41_失败与修复知识库.md`，每条经验必须包含现象、证据、根因、修复方式、验证状态；修复后要把对应经验回归写成自动测试或真机复验记录。
+- 采集前先看对应平台的经验条目，避免重复踩同一个坑。
