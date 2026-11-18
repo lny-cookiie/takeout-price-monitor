@@ -95,7 +95,13 @@ export function liveTaobaoCollector(opts: TaobaoCollectorOptions): Collector {
       // v2 试点允许同城同品牌不同分店：不强制命中登记的负责门店编号，只要求同品牌同城，
       // 实际分店以进入后的页面核对为准（不允许串品牌或串城市）。
       const storeName = live.target.supply.store.name;
-      const storeKeyword = undefined;
+      // 搜索结果页里有多家同品牌分店，用目标门店的“商圈核心词”（如“鞍山西”）做视觉锚点，
+      // 避免定位模型点到顶部搜索框里同名的“麦当劳”；分店允许替换时仍以进店后的实际门店为准。
+      const storeKeyword = (() => {
+        const m = storeName.match(/([\u4e00-\u9fa5]{2,8})店$/);
+        const core = m?.[1] ?? '';
+        return core.length > 3 ? core.slice(0, 3) : (core || undefined);
+      })();
 
       let quote: Awaited<ReturnType<typeof collectTaobao>> | null = null;
       let status: AttemptResult['status'] = 'failed';
