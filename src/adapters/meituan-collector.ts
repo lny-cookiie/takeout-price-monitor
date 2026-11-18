@@ -225,7 +225,16 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
               await semantic!.waitStable(4);
               const cartNodes=await semantic!.read();
               const cartLabels=cartNodes.map(n=>nodeLabel(n).trim()).filter(Boolean);
-              const targetListed=cartLabels.some(l=>l.includes(brand)&&/店/.test(l));
+              // 购物车页是全局购物车，会列出所有门店；必须只认“当前门店”这一组，
+              // 否则用户购物车里其他麦当劳分店的商品会被误判成目标店非空。
+              const menuLabelsForStore=(await semantic!.read().catch(()=>[] as U2Node[])).map(n=>nodeLabel(n));
+              const currentStoreLabel=menuLabelsForStore.find(l=>l.includes(brand)&&/店/.test(l))??'';
+              const core=currentStoreLabel.replace(/[（）()&＆\s]/g,'');
+              const branchTail=core.slice(-5);
+              const targetListed=branchTail.length>=3
+                ? cartLabels.some(l=>l.replace(/[（）()&＆\s]/g,'').includes(branchTail))
+                : cartLabels.some(l=>l.includes(brand)&&/店/.test(l));
+              console.log('[meituan] 购物车目标店判定', JSON.stringify({currentStoreLabel,branchTail,targetListed}));
               const cartTitleOk=cartLabels.some(l=>l==='购物车');
               console.log('[meituan] 购物车页检查', JSON.stringify({targetListed, cartTitleOk, sample: cartLabels.filter(l=>/麦当劳|购物车|全选|去结算/.test(l)).slice(0,10)}));
               note('cart_precheck', targetListed ? '购物车页出现目标门店，判定非空' : '购物车页未出现目标门店，判定目标店空车');
@@ -328,11 +337,22 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
         } else {
           // 结算页是 WebView 自绘，读屏为空（真机确认）：用整页截图读文字，金额读两次必须一致，再做费用加减核对。
           const readLines = async (tag: string) => {
-            const png = await device.screenshot(signal);
-            const content = await opts.model.text('meituan', 'meituan_checkout_lines',
-              '把这张截图里所有可见文字按行原样输出，最多 30 行；金额、商品名、门店名、费用名按原样保留；不要总结、不要判断。',
-              {image: png, signal, maxImageWidth: 900, maxTokens: 800});
-            return {lines: content.split(/\r?\n/).map(v => v.trim()).filter(Boolean), png};
+            // 本地小模型偶发把结算页读成状态栏数字（真机：可见行只有时间和网速）；
+            // 读到这种结果就重拍重读，最多 3 次，避免把“没读出来”误判成金额缺失。
+            const meaningful = (lines: string[]) => lines.filter(line => /[\u4e00-\u9fa5]/.test(line)).length >= 5;
+            let best: {lines: string[]; png: any} = {lines: [], png: Buffer.alloc(0)};
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              const png = await device.screenshot(signal);
+              const content = await opts.model.text('meituan', 'meituan_checkout_lines',
+                '把这张截图里所有可见文字按行原样输出，最多 30 行；金额、商品名、门店名、费用名按原样保留；不要总结、不要判断。',
+                {image: png, signal, maxImageWidth: 900, maxTokens: 800});
+              const lines = content.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+              best = {lines, png};
+              if (meaningful(lines)) break;
+              console.log('[meituan] 结算页读取无效，重试', attempt);
+              await new Promise(r => setTimeout(r, 700));
+            }
+            return best;
           };
           const firstRead = await readLines('checkout-read-1');
           const secondRead = await readLines('checkout-read-2');
@@ -478,6 +498,23 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
           await semantic.back();
           await new Promise(r => setTimeout(r, 1_500));
           let restored = false;
+          // 优先用“…”菜单进购物车页核对（读文字，不依赖底栏渲染）：没有目标门店分组就说明本次加购已移除。
+          try {
+            const more = await semantic!.find(n => /更多|更多选项/.test(nodeLabel(n)), 1_500).catch(() => null);
+            if (more) await semantic!.tap(more, '更多菜单');
+            await new Promise(r => setTimeout(r, 1_200));
+            const cartEntry = await semantic!.find(n => nodeLabel(n).trim() === '购物车', 2_500).catch(() => null);
+            if (cartEntry) {
+              await semantic!.tap(cartEntry, '购物车入口');
+              await semantic!.waitStable(4);
+              const labels = (await semantic!.read()).map(n => nodeLabel(n).trim());
+              const targetListed = labels.some(l => l.includes(brand) && /店/.test(l));
+              console.log('[meituan] 恢复核对购物车页', JSON.stringify({targetListed, sample: labels.filter(l => /麦当劳|购物车/.test(l)).slice(0, 6)}));
+              await semantic!.back();
+              await semantic!.waitStable(2);
+              if (!targetListed) restored = true;
+            }
+          } catch { /* 核对失败则走底栏循环兜底 */ }
           for (let attempt = 0; attempt < 4 && !restored; attempt++) {
             const state = await cartBarState().catch(() => null);
             if (state?.empty) { restored = true; break; }

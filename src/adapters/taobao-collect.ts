@@ -531,7 +531,18 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
       await adb(['shell', 'input', 'swipe', String(Math.round(W / 2)), String(Math.round(H * 0.62)), String(Math.round(W / 2)), String(Math.round(H * 0.28)), '420']);
       await sleep(2600);
     }
-    const s5 = s4 && await tapByVision('文字“搜一搜”的搜索框', 'shopsearch', {yMin: Math.round(H*0.02), yMax: Math.round(H*0.16), cropTopRatio: 0.01, cropBottomRatio: 0.18});
+    let s5 = s4 && await tapByVision('文字“搜一搜”的搜索框', 'shopsearch', {yMin: Math.round(H*0.02), yMax: Math.round(H*0.16), cropTopRatio: 0.01, cropBottomRatio: 0.18}, 1);
+    if (s4 && !s5) {
+      // 兜底：门店页顶部搜索框位置稳定（约 36% 宽、9.5% 高）；模型定位失败时用标定坐标点一次，
+      // 以“画面是否变化”确认进入了店内搜索页，避免三次 60 秒定位超时把整次预算耗光。
+      const before = await snap('shopsearch-fallback-before');
+      await adb(['shell', 'input', 'tap', String(Math.round(W * 0.36)), String(Math.round(H * 0.095))]);
+      await sleep(2_200);
+      const after = await snap('shopsearch-fallback-after');
+      s5 = (await screenMAD(before, after)) >= 8;
+      log('  [shopsearch] 标定兜底 进入店内搜索=' + s5);
+    }
+
     mark('打开店内搜索', !!s5);
 
     // 6 店内搜单品：真机实测店内搜索是“边输入边出结果”，不需要再点搜索键或回车；
@@ -612,15 +623,26 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 9 去结算：点完必须确认页面真的换了（会直接点空/点到购物车栏），用截图差异判断。
     let s9 = false;
     if (s8) {
+      // 去结算按钮固定在底栏最右侧（约 80% 宽、96% 高）；真机出现过模型定位连续 60 秒超时把预算耗尽。
+      // 先用标定坐标点两次并看画面差异，仍不动再用模型定位兜底一次。
       for (let i = 0; i < 2 && !s9; i++) {
         const before = await snap(`checkout-before-${i + 1}`);
-        const tapped = await tapByVision('“去结算”按钮', 'checkout', {yMin: Math.round(H * 0.90), yMax: H - 10, cropTopRatio: 0.86, cropBottomRatio: 1}, 1);
-        if (!tapped) continue;
-        await sleep(3_500);
+        await adb(['shell', 'input', 'tap', String(Math.round(W * 0.80)), String(Math.round(H * 0.963))]);
+        await sleep(3_000);
         const after = await snap(`checkout-after-${i + 1}`);
         const mad = await screenMAD(before, after);
         s9 = mad >= 6;
-        log(`  [checkout] 第${i + 1}次点击后画面差异=${mad.toFixed(1)} 判定=${s9 ? '已进入结算页' : '未跳转'}`);
+        log(`  [checkout] 第${i + 1}次标定点击后画面差异=${mad.toFixed(1)} 判定=${s9 ? '已进入结算页' : '未跳转'}`);
+      }
+      if (!s9) {
+        const before = await snap('checkout-before-model');
+        const tapped = await tapByVision('“去结算”按钮', 'checkout', {yMin: Math.round(H * 0.90), yMax: H - 10, cropTopRatio: 0.86, cropBottomRatio: 1}, 1);
+        if (tapped) {
+          await sleep(3_000);
+          const after = await snap('checkout-after-model');
+          s9 = (await screenMAD(before, after)) >= 6;
+          log(`  [checkout] 模型兜底后判定=${s9}`);
+        }
       }
     }
     mark('去结算', !!s9);
