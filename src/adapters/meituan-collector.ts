@@ -61,6 +61,7 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
       // 改为截取屏幕底部 10% 的购物车栏，让本地模型逐行读文字（离线实测 1 秒左右、准确）：
       // 空车显示“¥20起送/预估加配送费”，有商品显示“到手约/共减/去结算”。
       let deviceRef: Awaited<ReturnType<typeof connectAndroid>> | null = null;
+      let physicalRef: {width: number; height: number} | null = null;
       let visualLocateRef: ((hint: string) => Promise<{x: number; y: number} | null>) | null = null;
       let tapPointRef: ((x: number, y: number) => Promise<void>) | null = null;
       const adbShell = async (args: string[]) => {
@@ -111,6 +112,7 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
         const geometry = await sharp(await device.screenshot(signal)).metadata();
         if (!geometry.width || !geometry.height) throw new Error('screen_geometry_unknown');
         const physical = {width: geometry.width, height: geometry.height};
+        physicalRef = physical;
         const captureNodes = async (nodes:U2Node[],stage:string) => {
           const image=await device.screenshot(signal), meta=await sharp(image).metadata(), size=await device.size();
           const fresh=await semantic!.read();
@@ -541,7 +543,95 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
               return !stillListed;
             } catch { return false; }
           };
-          restored = await clearStoreCartViaManage();
+          // 先回到门店页再清理：从结算页按一次返回不一定是门店页（真机落到过搜索结果页）。
+          const ensureStorePage = async (): Promise<boolean> => {
+            for (let i = 0; i < 5; i++) {
+              const labels = (await semantic!.read().catch(() => [] as U2Node[])).map(n => nodeLabel(n).trim());
+              const tabs = ['点餐', '商家', '评价'].every(t => labels.includes(t));
+              const checkout = labels.some(l => /提交订单|立即支付/.test(l));
+              if (tabs && !checkout) return true;
+              await semantic!.back();
+              await new Promise(r => setTimeout(r, 1_200));
+            }
+            return false;
+          };
+          const clearViaCartPanel = async (): Promise<boolean> => {
+            try {
+              const sw = physicalRef?.width ?? 1260, sh = physicalRef?.height ?? 2844;
+              if (!(await ensureStorePage())) return false;
+              // 门店页左下角购物车图标打开已选商品面板，面板右上角有“清空”。
+              await adbShell(['shell', 'input', 'tap', String(Math.round(sw * 0.11)), String(Math.round(sh * 0.96))]);
+              await new Promise(r => setTimeout(r, 1_600));
+              const panelLabels = (await semantic!.read().catch(() => [] as U2Node[])).map(n => nodeLabel(n).trim());
+              const hasClear = panelLabels.some(l => l === '清空');
+              console.log('[meituan] 购物车面板清空入口', JSON.stringify({ hasClear, sample: panelLabels.filter(l => /清空|已加购|板烧/.test(l)).slice(0, 6) }));
+              if (!hasClear) return false;
+              const clear = await semantic!.find(n => nodeLabel(n).trim() === '清空', 1_500).catch(() => null);
+              if (!clear) return false;
+              await semantic!.tap(clear, '清空');
+              await new Promise(r => setTimeout(r, 1_400));
+              const confirm = await semantic!.find(n => /^(确定|确认|清空)$/.test(nodeLabel(n).trim()), 1_500).catch(() => null);
+              if (confirm) { await semantic!.tap(confirm, '确认清空'); await new Promise(r => setTimeout(r, 1_400)); }
+              await adbShell(['shell', 'input', 'tap', String(Math.round(sw * 0.5)), String(Math.round(sh * 0.2))]);
+              await new Promise(r => setTimeout(r, 1_200));
+              const state = await cartBarState().catch(() => null);
+              console.log('[meituan] 面板清空后底栏', JSON.stringify({ empty: state?.empty }));
+              return !!state?.empty;
+            } catch { return false; }
+          };
+          restored = await clearViaCartPanel();
+          // 最终兜底：全局购物车“管理”模式删除本次商品。
+          // 用“u2 读位置 + adb 物理坐标点击”复刻真机验证过的步骤（2026-11-19 手动成功 3 次）。
+          const clearViaGlobalCartManage = async (): Promise<boolean> => {
+            try {
+              const densityText = String((await adbShell(['shell', 'wm', 'density']))?.stdout ?? '');
+              const density = Number(/density:\s*(\d+)/i.exec(densityText)?.[1] ?? 540);
+              const ratio = density / 160;
+              const W = physicalRef?.width ?? 1260, H = physicalRef?.height ?? 2844;
+              const tapDp = async (left: number, top: number, width = 0, height = 0) => {
+                const x = Math.round((left + width / 2) * ratio), y = Math.round((top + height / 2) * ratio);
+                await adbShell(['shell', 'input', 'tap', String(x), String(y)]);
+              };
+              // 直接 start MainActivity 只会把旧任务栈（门店/结算页）带回前台，必须先 force-stop 再启动，
+              // 才能回到美团首页并看到底部“购物车”标签；force-stop 不会清购物车（购物车在服务端）。
+              await adbShell(['shell', 'am', 'force-stop', 'com.sankuai.meituan']);
+              await new Promise(r => setTimeout(r, 1_000));
+              await adbShell(['shell', 'am', 'start', '-n', 'com.sankuai.meituan/com.meituan.android.pt.homepage.activity.MainActivity']);
+              await new Promise(r => setTimeout(r, 6_000));
+              await adbShell(['shell', 'input', 'tap', String(Math.round(W * 0.68)), String(Math.round(H * 0.958))]);
+              await new Promise(r => setTimeout(r, 3_000));
+              const manage = await semantic!.find(n => nodeLabel(n).trim() === '管理', 3_000).catch(() => null);
+              if (!manage) return false;
+              await tapDp(manage.left, manage.top, manage.width, manage.height);
+              await new Promise(r => setTimeout(r, 2_000));
+              for (let attempt = 0; attempt < 3; attempt++) {
+                const nodes = await semantic!.read();
+                const itemIdx = nodes.findIndex(n => nodeLabel(n).trim() === itemName);
+                if (itemIdx < 0) { await adbShell(['shell', 'input', 'keyevent', '4']); return true; }
+                const item = nodes[itemIdx]!;
+                const checkbox = nodes.find(n => /Button/i.test(String((n as {cls?: string}).cls ?? '')) && n.left < item.left && Math.abs(n.top - item.top) < 60);
+                console.log('[meituan] 全局购物车勾选', JSON.stringify({ attempt, item: [item.left, item.top], checkbox: checkbox ? [checkbox.left, checkbox.top] : null }));
+                if (!checkbox) return false;
+                await tapDp(checkbox.left, checkbox.top, checkbox.width, checkbox.height);
+                await new Promise(r => setTimeout(r, 1_500));
+                const afterSelect = await semantic!.read();
+                const del = afterSelect.find(n => /^删除\(\d+\)/.test(nodeLabel(n).trim()));
+                if (!del) return false;
+                await tapDp(del.left, del.top, del.width, del.height);
+                await new Promise(r => setTimeout(r, 1_500));
+                const confirmNodes = await semantic!.read();
+                const confirm = confirmNodes.find(n => nodeLabel(n).trim() === '删除' && n.top > 400);
+                if (confirm) { await tapDp(confirm.left, confirm.top, confirm.width, confirm.height); await new Promise(r => setTimeout(r, 1_800)); }
+                const verify = await semantic!.read();
+                const remains = verify.filter(n => nodeLabel(n).trim() === itemName).length;
+                console.log('[meituan] 全局购物车删除后核对', JSON.stringify({ remains }));
+                if (remains === 0) { await adbShell(['shell', 'input', 'keyevent', '4']); return true; }
+              }
+              return false;
+            } catch { return false; }
+          };
+          if (!restored) restored = await clearViaGlobalCartManage();
+          if (!restored) restored = await clearStoreCartViaManage();
           // 兜底：优先用“…”菜单进购物车页核对（读文字，不依赖底栏渲染）：没有目标门店分组就说明本次加购已移除。
           try {
             const more = await semantic!.find(n => (nodeLabel(n).trim()==='更多'||nodeLabel(n).trim()==='更多选项') && n.top < 200, 1_500).catch(() => null);
