@@ -217,7 +217,7 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
               // “…”菜单偶尔点不动或弹出有延迟：最多重试 3 次（含视觉定位兜底），仍打不开再报错。
               let cartEntry=null;
               for(let attempt=0;attempt<3 && !cartEntry;attempt++){
-                const moreBtn=await semantic!.find(n=>/更多|更多选项/.test(nodeLabel(n)),1_500).catch(()=>null);
+                const moreBtn=await semantic!.find(n=>(nodeLabel(n).trim()==='更多'||nodeLabel(n).trim()==='更多选项') && n.top < 200,1_500).catch(()=>null);
                 if(moreBtn){ await semantic!.tap(moreBtn,'更多菜单'); }
                 else {
                   const hit=await visualLocate('顶部右侧的“…”按钮').catch(()=>null);
@@ -509,7 +509,7 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
           // 所以该店购物车里的商品只可能是本次加购；整页删除比逐个找减号更可靠。
           const clearStoreCartViaManage = async (): Promise<boolean> => {
             try {
-              const more = await semantic!.find(n => /更多|更多选项/.test(nodeLabel(n)), 1_500).catch(() => null);
+              const more = await semantic!.find(n => (nodeLabel(n).trim()==='更多'||nodeLabel(n).trim()==='更多选项') && n.top < 200, 1_500).catch(() => null);
               if (!more) return false;
               await semantic!.tap(more, '更多菜单');
               await new Promise(r => setTimeout(r, 1_200));
@@ -544,7 +544,7 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
           restored = await clearStoreCartViaManage();
           // 兜底：优先用“…”菜单进购物车页核对（读文字，不依赖底栏渲染）：没有目标门店分组就说明本次加购已移除。
           try {
-            const more = await semantic!.find(n => /更多|更多选项/.test(nodeLabel(n)), 1_500).catch(() => null);
+            const more = await semantic!.find(n => (nodeLabel(n).trim()==='更多'||nodeLabel(n).trim()==='更多选项') && n.top < 200, 1_500).catch(() => null);
             if (more) await semantic!.tap(more, '更多菜单');
             await new Promise(r => setTimeout(r, 1_200));
             const cartEntry = await semantic!.find(n => nodeLabel(n).trim() === '购物车', 2_500).catch(() => null);
@@ -578,7 +578,7 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
             // 兜底：底栏文字读不到时，从门店页右上角“…”进购物车页核对目标店是否还列着商品。
             // 购物车页没有目标门店分组 = 本次加购已移除；这里只读页面文字，不点任何“全选/结算”按钮。
             try {
-              const more = await semantic!.find(n => /更多|更多选项/.test(nodeLabel(n)), 1_500).catch(() => null);
+              const more = await semantic!.find(n => (nodeLabel(n).trim()==='更多'||nodeLabel(n).trim()==='更多选项') && n.top < 200, 1_500).catch(() => null);
               if (more) await semantic!.tap(more, '更多菜单');
               await new Promise(r => setTimeout(r, 1_200));
               const cartEntry = await semantic!.find(n => nodeLabel(n).trim() === '购物车', 2_500).catch(() => null);
