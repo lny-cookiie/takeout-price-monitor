@@ -175,7 +175,9 @@ export function checkResult(task: Task, r: AttemptResult): void {
         normalize(actual.store.brand)!==normalize(task.live.target.supply.store.brand) ||
         normalize(actual.item.name)!==normalize(task.live.target.supply.item.name) || itemGate(task.live.target.supply,actual) ||
         !mapping || mapping.status!=='verified' || mapping.candidate.platform!==task.platform || mapping.candidate.entry!==task.entry_point ||
-        mapping.targetId!==resolved.target.id || mapping.targetRevision!==resolved.target.revision)
+        // 同城同品牌不同分店时，实际门店变了会导致解析出的目标编号变化；只要映射配置本身还是同一版本，
+        // 就允许目标编号不一致，分店差异由观察结果里的实际门店名和地址体现。
+        (mapping.targetId!==resolved.target.id && digest(mapping.candidate.supply)===digest(actual)) || mapping.targetRevision!==resolved.target.revision)
         throw new CollectionError('resolved_target_mismatch');
       // 按 v2 规则允许同城同品牌不同分店，必须展示实际分店；分店差异体现在 observation 的实际门店名和地址里。
       if (['success','partial'].includes(r.status)) {
