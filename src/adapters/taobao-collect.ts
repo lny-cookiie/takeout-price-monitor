@@ -708,9 +708,16 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 隐私：整页截图只用于本地模型读取；保存证据时把顶部地址区域涂黑。
     const readCheckoutLines = async (tag: string) => {
       const png = await snap(tag);
-      const content = await o.model.text('taobao_instant', 'taobao_checkout_lines',
-        '把这张结算页截图里所有可见文字按行原样输出，最多 30 行；金额、商品名、门店名都要按原样保留。不要总结、不要判断。',
-        {image: png, signal: activeSignal, maxImageWidth: 900, maxTokens: 750});
+      // 本地模型偶发 60 秒硬超时；这里把异常降级成“空读取”，交给外层重试循环再拍再读，
+      // 不把一次超时直接判成整次采集失败。
+      let content = '';
+      try {
+        content = await o.model.text('taobao_instant', 'taobao_checkout_lines',
+          '把这张结算页截图里所有可见文字按行原样输出，最多 30 行；金额、商品名、门店名都要按原样保留。不要总结、不要判断。',
+          {image: png, signal: activeSignal, maxImageWidth: 900, maxTokens: 750});
+      } catch (error) {
+        log('  [checkout] 整页读取异常：' + (error as Error).message);
+      }
       return {lines: content.split(/\r?\n/).map(v => v.trim()).filter(Boolean), png};
     };
     // 本地小模型偶尔把结算页读成状态栏数字（真机：可见行1 只有时间/网速）。读到这种结果就重新截一次再读，

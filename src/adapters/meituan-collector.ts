@@ -352,9 +352,14 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
             let best: {lines: string[]; png: any} = {lines: [], png: Buffer.alloc(0)};
             for (let attempt = 1; attempt <= 3; attempt++) {
               const png = await device.screenshot(signal);
-              const content = await opts.model.text('meituan', 'meituan_checkout_lines',
-                '把这张截图里所有可见文字按行原样输出，最多 30 行；金额、商品名、门店名、费用名按原样保留；不要总结、不要判断。',
-                {image: png, signal, maxImageWidth: 900, maxTokens: 800});
+              let content = '';
+              try {
+                content = await opts.model.text('meituan', 'meituan_checkout_lines',
+                  '把这张截图里所有可见文字按行原样输出，最多 30 行；金额、商品名、门店名、费用名按原样保留；不要总结、不要判断。',
+                  {image: png, signal, maxImageWidth: 900, maxTokens: 800});
+              } catch (error) {
+                console.log('[meituan] 结算页读取异常，重试', (error as Error).message);
+              }
               const lines = content.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
               best = {lines, png};
               if (meaningful(lines)) break;
