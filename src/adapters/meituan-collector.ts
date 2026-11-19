@@ -211,15 +211,19 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
               // 当前美团版本的门店页不渲染底部购物车栏（真机四张整屏截图确认）。改为：
               // 打开右上角“…”菜单 → 购物车。若目标店购物车有商品，购物车页会按门店分组列出该店；
               // 若整页没有目标门店名，则目标店购物车为空。判断依据保存为文字记录，不保存含用户其他商品的截图。
-              const moreBtn=await semantic!.find(n=>/更多|更多选项/.test(nodeLabel(n)),1_500).catch(()=>null);
-              if(moreBtn){ await semantic!.tap(moreBtn,'更多菜单'); }
-              else {
-                const hit=await visualLocate('顶部右侧的“…”按钮').catch(()=>null);
-                if(!hit) throw new Error('cart_entry_missing');
-                await tapPoint(hit.x,hit.y);
+              // “…”菜单偶尔点不动或弹出有延迟：最多重试 3 次（含视觉定位兜底），仍打不开再报错。
+              let cartEntry=null;
+              for(let attempt=0;attempt<3 && !cartEntry;attempt++){
+                const moreBtn=await semantic!.find(n=>/更多|更多选项/.test(nodeLabel(n)),1_500).catch(()=>null);
+                if(moreBtn){ await semantic!.tap(moreBtn,'更多菜单'); }
+                else {
+                  const hit=await visualLocate('顶部右侧的“…”按钮').catch(()=>null);
+                  if(hit) await tapPoint(hit.x,hit.y);
+                }
+                await new Promise(r=>setTimeout(r,1_600+attempt*600));
+                cartEntry=await semantic!.find(n=>nodeLabel(n).trim()==='购物车',2_500).catch(()=>null);
+                if(!cartEntry){ await semantic!.back().catch(()=>null); await new Promise(r=>setTimeout(r,800)); }
               }
-              await new Promise(r=>setTimeout(r,1_200));
-              const cartEntry=await semantic!.find(n=>nodeLabel(n).trim()==='购物车',3_000).catch(()=>null);
               if(!cartEntry) throw new Error('cart_entry_missing');
               await semantic!.tap(cartEntry,'购物车入口');
               await semantic!.waitStable(4);

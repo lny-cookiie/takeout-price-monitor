@@ -798,6 +798,7 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
           bottom = await readCropLines('cleanup-after-back', 0.82, 1).catch(() => [] as string[]);
         }
         const hasOwnedItem = (lines: string[]) => lines.some(line => /去结算|到手约|共减/.test(line));
+        log('  [cleanup] 开始恢复购物车 底栏=' + bottom.slice(0, 4).join(' / '));
         // 本次任务开始时已确认空车，购物车里的商品只可能是本次加购的，因此可以按减号移除。
         for (let i = 0; i < 3 && hasOwnedItem(bottom); i++) {
           const shot = await snap(`cleanup-remove-${i + 1}`);
