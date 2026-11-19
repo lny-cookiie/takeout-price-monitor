@@ -507,6 +507,26 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     if (s3 && !alreadyInStore) {
       s4 = await tapByVision(storeHint, 'store',
         {yMin: Math.round(H * 0.25), yMax: Math.round(H * 0.64), cropTopRatio: 0.22, cropBottomRatio: 0.66}, 2);
+      // 结果页里商品缩略图和门店卡挨得很近，模型偶尔点到商品进详情页；点完必须确认页面是门店页
+      // （顶部同时有“点餐/评价/品牌”三个标签），否则退回结果页重试一次，仍不对就明确失败，不拿详情页数据继续。
+      if (s4) {
+        await sleep(1_600);
+        const tabs = await readCropLines('store-entry-check', 0.03, 0.22, {maxLines: 16, maxTokens: 420}).catch(() => [] as string[]);
+        const tabOk = ['点餐', '评价', '品牌'].every(name => tabs.some(line => line.includes(name)));
+        log(`  [store] 进店校验 三个标签齐全=${tabOk} 行=${tabs.slice(0, 6).join(' / ')}`);
+        if (!tabOk) {
+          await adb(['shell', 'input', 'keyevent', 'KEYCODE_BACK']);
+          await sleep(1_800);
+          s4 = await tapByVision(storeHint, 'store',
+            {yMin: Math.round(H * 0.25), yMax: Math.round(H * 0.64), cropTopRatio: 0.22, cropBottomRatio: 0.66}, 1);
+          if (s4) {
+            await sleep(1_600);
+            const tabs2 = await readCropLines('store-entry-check-2', 0.03, 0.22, {maxLines: 16, maxTokens: 420}).catch(() => [] as string[]);
+            s4 = ['点餐', '评价', '品牌'].every(name => tabs2.some(line => line.includes(name)));
+          }
+          if (!s4) throw new Error('taobao_store_entry_failed');
+        }
+      }
     }
     if (s4) {
       // 淘宝门店页的“点餐”页不显示门店名和地址，但“品牌”标签页会显示门店全名和营业地址（真机确认）。

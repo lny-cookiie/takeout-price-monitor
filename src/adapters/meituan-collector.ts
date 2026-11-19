@@ -151,6 +151,9 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
         } as any);
 
         emit?.({phase: 'brand_search', state: 'started'});
+        // 手机长时间空闲可能锁屏，进入美团导航前先唤醒并解锁，避免 target_app_not_foreground。
+        await adbShell(['shell', 'input', 'keyevent', '224']);
+        await adbShell(['shell', 'wm', 'dismiss-keyguard']);
         const steps = await (opts.navigate ?? navigateMeituan)({
           serial: source.device,
           semantic,
