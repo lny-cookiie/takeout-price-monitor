@@ -570,8 +570,16 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 购物车底栏同样不在读屏树里；用底栏截图文字判断空车（空车显示“¥20起送/另需配送费”，有商品显示“去结算/到手约”）。
     let cartEmptyPrecheck = false;
     if (s4) {
-      const bottomLines = await readCropLines('cartbar', 0.78, 1).catch(() => [] as string[]);
-      log(`  [cart] 底栏可见行：${bottomLines.slice(0, 8).join(' / ')}`);
+      // 刚点完“点餐”或恢复前台后，页面偶尔还停在商家公告/说明区，底栏读不到购物车文字；
+      // 先滚动回顶部并重读，最多 3 次，避免把“没读到”误判成购物车非空。
+      let bottomLines: string[] = [];
+      for (let attempt = 0; attempt < 3; attempt++) {
+        bottomLines = await readCropLines(`cartbar-${attempt + 1}`, 0.78, 1).catch(() => [] as string[]);
+        log(`  [cart] 底栏可见行：${bottomLines.slice(0, 8).join(' / ')}`);
+        if (bottomLines.some(l => /起送/.test(l)) || bottomLines.some(l => /去结算|到手约|共减/.test(l))) break;
+        await adb(['shell', 'input', 'swipe', String(Math.round(W * 0.5)), String(Math.round(H * 0.30)), String(Math.round(W * 0.5)), String(Math.round(H * 0.75)), '400']);
+        await sleep(1_300);
+      }
       cartEmptyPrecheck = bottomLines.some(l => /起送/.test(l)) && !bottomLines.some(l => /去结算|到手约|共减/.test(l));
       if (!cartEmptyPrecheck) throw new Error('cart_preflight_unverified');
     }
