@@ -83,6 +83,9 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     try { return await requireForegroundOnce(); } catch (error) {
       if ((error as {code?:string}).code !== 'target_app_not_foreground') throw error;
       log('  [recover] 淘宝不在前台，解锁并重新拉起');
+      // 可能是系统权限/更新弹层盖住了应用：先按返回键尝试关掉弹层，再解锁并重新拉起。
+      await adb(['shell', 'input', 'keyevent', '4']).catch(() => null);
+      await sleep(500);
       await adb(['shell', 'wm', 'dismiss-keyguard']).catch(() => null);
       await adb(['shell', 'input', 'keyevent', '224']).catch(() => null);
       await adb(['shell', 'am', 'start', '-n', 'com.taobao.taobao/com.taobao.tao.welcome.Welcome']).catch(() => null);
@@ -291,13 +294,41 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
     // 冷启动淘宝，保证从干净首页开始。
     // 等待时间不能太短：淘宝冷启动期间会占满 CPU，此时立刻调视觉模型会拖到 60 秒超时
     // （2026-11-12 实测：等 11 秒时连续 3 次 model_location_failed，每次卡满 62 秒）。
+    // 从别的应用（例如刚跑完美团）切到淘宝前先回桌面，避免淘宝启动后被上一个应用的任务栈或系统弹层挡住；
+    // 真机出现过连续 4 次“淘宝不在前台”的恢复循环，随后在空页面上打字。
+    await adb(['shell', 'input', 'keyevent', '3']).catch(() => null);
+    await sleep(800);
     await adb(['shell', 'am', 'start', '-S', '-n', 'com.taobao.taobao/com.taobao.tao.welcome.Welcome']);
-    // 冷启动不要死等固定秒数：实测首页常在 8-10 秒就可用，死等 20 秒纯属浪费；
-    // 但双 11 弹层期会更慢，所以改成「先等 8 秒，再用首页 tab 特征轮询确认就绪」。
-    await sleep(8_000);
+    // 冷启动不要死等固定秒数：实测首页常在 8-10 秒就可用；双 11 弹层期更慢，改为 12 秒后再确认就绪。
+    await sleep(12_000);
     await snap('boot-check');
     await readNodes();
     mark('冷启动淘宝', true);
+    // 淘宝首页会弹“超级88红包/惊喜消费券”这类全屏弹层，盖住标签栏导致点“闪购”完全没反应。
+    // 用中心区域红色占比识别弹层，点它右下角的关闭按钮（约 49.8% 宽、78.1% 高）关闭；识别不到就按返回键。
+    const dismissHomePopup = async (tag: string): Promise<void> => {
+      const shot = await snap(tag);
+      const meta = await sharp(shot).metadata();
+      const w = meta.width ?? W, h = meta.height ?? H;
+      const left = Math.round(w * 0.2), top = Math.round(h * 0.25);
+      const cw = Math.round(w * 0.6), ch = Math.round(h * 0.45);
+      try {
+        const {data, info} = await sharp(shot).extract({left, top, width: cw, height: ch}).raw().toBuffer({resolveWithObject: true});
+        let red = 0, total = info.width * info.height;
+        for (let i = 0; i < total; i++) {
+          const r = data[i * info.channels]!, g = data[i * info.channels + 1]!, b = data[i * info.channels + 2]!;
+          if (r > 170 && g < 90 && b < 90) red++;
+        }
+        if (red / total > 0.35) {
+          log(`  [popup] 首页弹层红色占比=${(red / total * 100).toFixed(0)}%，点关闭`);
+          await adb(['shell', 'input', 'tap', String(Math.round(W * 0.498)), String(Math.round(H * 0.781))]);
+          await sleep(1_200);
+          await adb(['shell', 'input', 'keyevent', '4']);
+          await sleep(1_000);
+        }
+      } catch { /* 识别失败时不影响主流程 */ }
+    };
+    await dismissHomePopup('popup-check');
 
     // 1 首页 →「闪购外卖」tab
     // 冷启动后的首页偶尔会自己跳回“推荐”页或弹活动层：点完闪购必须确认页面真的变了，再继续。
@@ -584,7 +615,11 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
           const rowLines = rowText.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
           log(`  [plus] 候选 (${x},${y}) 行内文字：${rowLines.slice(0, 8).join(' / ')}`);
           // 单品行的标题会单独成行且完全等于目标名；套餐行是“板烧鸡腿堡套餐/三件套”等，不会完全相等。
-          if (rowLines.some(line => line === itemName)) {
+          // 但搜索框里也会出现一模一样的单品名文字（真机踩坑：把搜索框那一行当成商品行，点到了旁边的商品）。
+          // 因此额外要求这一行带“月售”（商品行特征），且不出现“搜索”或状态栏时间。
+          const hasMonthSale = rowLines.some(line => /月售/.test(line));
+          const hasSearchBoxText = rowLines.some(line => line === '搜索' || /^\d{1,2}:\d{2}$/.test(line));
+          if (rowLines.some(line => line === itemName) && hasMonthSale && !hasSearchBoxText) {
             await adb(['shell', 'input', 'tap', String(x), String(y)]);
             log(`  [add-item] 点击单品行加号 (${x},${y})`);
             cartMayHaveChanged = true;
