@@ -170,7 +170,10 @@ export function checkResult(task: Task, r: AttemptResult): void {
         digest(r.resolvedLive.profile)!==digest(task.live.profile) ||
         r.resolvedLive.sourceRevision!==task.live.sourceRevision ||
         r.resolvedLive.meal!==task.live.meal || r.resolvedLive.couponPolicy!==task.live.couponPolicy ||
-        !actual.store.name || !actual.store.address || !actual.store.city || !actual.store.brand ||
+        !actual.store.name || !actual.store.city || !actual.store.brand ||
+        // 商家页偶尔读不到营业地址，采集器会在 missing_reasons 里明确写“只按唯一门店名核对”；
+        // 这种情况下允许地址为空，但门店名必须存在且唯一（v2 要求展示实际分店，门店名已经展示）。
+        (!actual.store.address && !r.observation?.details?.missing?.store_address) ||
         normalize(actual.store.city).replace(/市$/,'')!==normalize(task.live.target.supply.store.city).replace(/市$/,'') ||
         normalize(actual.store.brand)!==normalize(task.live.target.supply.store.brand) ||
         normalize(actual.item.name)!==normalize(task.live.target.supply.item.name) || itemGate(task.live.target.supply,actual) ||
