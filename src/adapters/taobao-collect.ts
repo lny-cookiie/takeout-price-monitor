@@ -774,7 +774,16 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
         '把这张截图里的可见文字按行原样输出，最多 8 行；不要编号、不要总结。',
         {image: band, signal: activeSignal, maxImageWidth: 900, maxTokens: 260}).catch(() => '');
       itemEvidenceShot = await o.evidence.save(randomUUID(), 'item', band, bandLines.split(/\r?\n/).filter(Boolean).slice(0, 8).join('\n'), 'live');
-    } catch { /* 定位不到商品行时，后面的身份校验会明确失败 */ }
+    } catch {
+      // 模型定位商品行偶发超时；结算页顶部已按 24% 涂黑，退回到固定的中上段裁一条商品证据（含商品名/数量/价格），
+      // 保证身份证据链不断，同时不引入任何隐私区域。
+      try {
+        const bandTop = Math.round(H * 0.26), bandH = Math.min(Math.round(H * 0.14), H - bandTop);
+        const band = await sharp(firstRead.png).extract({left: 0, top: bandTop, width: W, height: bandH}).png().toBuffer();
+        itemEvidenceShot = await o.evidence.save(randomUUID(), 'item', band, safeLines(firstRead.lines).slice(0, 10).join('\n'), 'live');
+        log('  [checkout] 商品行定位失败，改用固定中上段作商品证据');
+      } catch { /* 仍失败则让身份校验明确失败 */ }
+    }
     if (!actualStore || !actualItem || !storeEvidence || !itemEvidenceShot) throw new Error('taobao_identity_unverified');
     mark('采数完成', true);
     return {checkoutSha256: checkoutEvidence.sha256, checkoutEvidence, storeEvidence, itemEvidence: itemEvidenceShot,
@@ -804,7 +813,30 @@ export async function collectTaobao(o: TaobaoCollectOptions): Promise<TaobaoQuot
           const shot = await snap(`cleanup-remove-${i + 1}`);
           let hit: [number, number] | null = null;
           try { hit = await model.locate('taobao_instant', shot, '红色减号“−”按钮', activeSignal); } catch { /* 下一轮再试 */ }
-          if (!hit) break;
+          if (!hit) {
+            // 减号定位失败时，打开左下角购物车面板，点面板右上角“清空”（任务开始时已确认该店空车，
+            // 因此该店购物车里的商品只可能是本次加购），再确认底部回到空车状态。
+            log('  [cleanup] 减号定位失败，尝试购物车面板清空');
+            await adb(['shell', 'input', 'tap', String(Math.round(W * 0.107)), String(Math.round(H * 0.966))]);
+            await sleep(1_600);
+            const panelShot = await snap('cleanup-clear-panel');
+            let clearHit: [number, number] | null = null;
+            try { clearHit = await model.locate('taobao_instant', panelShot, '文字“清空”', activeSignal); } catch { clearHit = null; }
+            if (clearHit) {
+              await adb(['shell', 'input', 'tap', String(Math.round(clearHit[0])), String(Math.round(clearHit[1]))]);
+              await sleep(1_400);
+              // 可能有二次确认弹窗
+              const confirmShot = await snap('cleanup-clear-confirm');
+              let okHit: [number, number] | null = null;
+              try { okHit = await model.locate('taobao_instant', confirmShot, '文字“确定”或“确认”按钮', activeSignal); } catch { okHit = null; }
+              if (okHit) { await adb(['shell', 'input', 'tap', String(Math.round(okHit[0])), String(Math.round(okHit[1]))]); await sleep(1_200); }
+              await adb(['shell', 'input', 'tap', String(Math.round(W * 0.5)), String(Math.round(H * 0.16))]).catch(() => null);
+              await sleep(1_000);
+              bottom = await readCropLines(`cleanup-bar-clear-${i + 2}`, 0.82, 1).catch(() => [] as string[]);
+              continue;
+            }
+            break;
+          }
           await adb(['shell', 'input', 'tap', String(Math.round(hit[0])), String(Math.round(hit[1]))]);
           await sleep(1_800);
           bottom = await readCropLines(`cleanup-bar-${i + 2}`, 0.82, 1).catch(() => [] as string[]);
