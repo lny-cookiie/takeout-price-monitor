@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkResult, TENANT, validateTask, type Task, type Slot, type Platform, type AttemptResult, type Observation, type AttemptStep, type StepUpdate } from '../domain/contracts.js';
 import type { CollectionStore, RunInfo, Schedule, Snapshot, Claimed, Event } from '../application/ports.js';
@@ -10,12 +10,32 @@ const json = <T>(v: unknown): T => JSON.parse(String(v)) as T;
 const accountKey = (t: Task) => `account:${t.platform}:${t.account_ref}`;
 /** 失败知识采集：每次失败/异常都追加一条机器可读记录，供知识库整理与自进化复盘使用。
  *  只记录结构化事实（平台、错误码、清理状态、最近步骤），不记录页面隐私内容；不删除任何历史。 */
+
+type FixEntryLite = { id: string; title: string; platforms: string[]; error_codes: string[]; status: string };
+let fixRegistryCache: { mtimeMs: number; entries: FixEntryLite[] } | null = null;
+/** 读取失败模式注册表并按错误码匹配；读不到就当没有，绝不影响主流程。 */
+function knownFixFor(errorCode: string | null, platform: string): FixEntryLite | null {
+  if (!errorCode) return null;
+  try {
+    const path = '前期调研/42_失败模式注册表.json';
+    if (!existsSync(path)) return null;
+    const mtimeMs = statSync(path).mtimeMs;
+    if (!fixRegistryCache || fixRegistryCache.mtimeMs !== mtimeMs) {
+      const registry = JSON.parse(readFileSync(path, 'utf8')) as { entries?: FixEntryLite[] };
+      fixRegistryCache = { mtimeMs, entries: registry.entries ?? [] };
+    }
+    return fixRegistryCache.entries.find((e) => e.error_codes.includes(errorCode) && (e.platforms.includes('*') || e.platforms.includes(platform))) ?? null;
+  } catch { return null; }
+}
+
 function recordAttemptKnowledge(task: Task, result: AttemptResult): void {
   try {
     if (process.env.NODE_TEST_CONTEXT || process.env.TAKEOUT_DISABLE_KNOWLEDGE === '1') return;
     if (result.status === 'success') return;
     const dir = '.runtime/knowledge';
     mkdirSync(dir, { recursive: true });
+    const inferredCode = result.error_code ?? (task.platform === 'jd' && result.status === 'partial' ? 'jd_partial_detail_incomplete' : null);
+    const fix = knownFixFor(inferredCode, task.platform);
     const record = {
       at: new Date().toISOString(),
       platform: task.platform,

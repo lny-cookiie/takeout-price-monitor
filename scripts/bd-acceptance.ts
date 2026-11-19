@@ -7,6 +7,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {join, resolve} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
+import {buildDigest} from './knowledge-lib.js';
 
 const run = promisify(execFile);
 const base = 'http://127.0.0.1:4318';
@@ -95,6 +96,12 @@ async function verifyEvidence(slot: Slot): Promise<boolean | null> {
   } catch { return null; }
 }
 
+// 开跑前先读自愈知识库摘要：上次的高频失败和未登记签名，提醒本轮重点观察什么。
+try {
+  const preflight = buildDigest(7);
+  const top = preflight.by_signature.slice(0, 5).map(v => v.signature + '×' + v.count).join('，');
+  console.log('知识库预检：最近 7 天失败 ' + preflight.window_records + ' 条；高频 ' + (top || '无') + '；未登记签名 ' + preflight.unregistered.length + ' 个；回退风险 ' + preflight.regressions.length + ' 个');
+} catch (error) { console.log('知识库预检跳过：' + (error as Error).message); }
 console.log('版本信息', JSON.stringify(await versionStamp()).slice(0, 400));
 await writeFile(join(dir, 'version.json'), JSON.stringify(await versionStamp(), null, 2));
 const rows: Record<string, unknown>[] = [];
@@ -170,5 +177,11 @@ const summary = {
   note: '耗时只统计完整成功组的实际完整耗时；失败组不参与分位数；正确性仍需逐份对照证据复核。',
 };
 await writeFile(join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
+// 批次结束自动生成失败摘要，避免“跑完就忘”；摘要同时提示未登记签名和回退风险。
+try {
+  const digest = buildDigest(7);
+  await writeFile(join(dir, 'failure-digest.md'), digest.markdown);
+  console.log('失败摘要已写入 ' + join(dir, 'failure-digest.md') + '（未登记签名 ' + digest.unregistered.length + ' 个，回退风险 ' + digest.regressions.length + ' 个）');
+} catch (error) { console.log('失败摘要生成失败：' + (error as Error).message); }
 console.log('批次目录', dir);
 console.log(JSON.stringify(summary, null, 2));

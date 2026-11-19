@@ -1,0 +1,371 @@
+{
+  "version": 1,
+  "updated_at": "2026-11-19T09:37:55.562Z",
+  "note": "机器可读的失败模式与修复注册表。每次失败自动匹配 error_codes；修复后必须用 scripts/knowledge-registry.ts verify 标注运行编号。状态 verified 的条目一旦再次出现同错误码，check 命令会报 regressed。",
+  "entries": [
+    {
+      "id": "F-13",
+      "title": "应用版本漂移或更新中间态",
+      "platforms": [
+        "*"
+      ],
+      "error_codes": [
+        "app_version_changed"
+      ],
+      "step": "source_check",
+      "symptom": "版本校验不一致，采集被拦截；可能是自动更新中间态。",
+      "root_cause": "应用商店自动更新期间版本号读到中间态，或确实升级导致登记版本过期。",
+      "fix": "探测模式开关 TAKEOUT_ALLOW_VERSION_DRIFT=1 允许继续并记录实际版本；验收批次仍要求版本一致。",
+      "code_files": [
+        "src/adapters/android-transport.ts"
+      ],
+      "fix_commit": "0b7ca4a",
+      "status": "verified",
+      "first_seen": "2026-11-17",
+      "verified_at": "2026-11-19",
+      "verified_runs": [],
+      "note": "探测数据不进验收批次。"
+    },
+    {
+      "id": "F-16",
+      "title": "美团验证码或图片验证",
+      "platforms": [
+        "meituan"
+      ],
+      "error_codes": [
+        "captcha_required",
+        "access_restricted",
+        "rate_limited"
+      ],
+      "step": "store/cart/checkout",
+      "symptom": "页面出现“请输入图片中的内容”“请依次点击下图图标”等验证码。",
+      "root_cause": "高频重复操作触发平台风控。",
+      "fix": "识别验证码字样即停止且不点击，调度器暂停平台，批次停批，组间冷却；必须人工完成验证。",
+      "code_files": [
+        "src/adapters/captcha.ts",
+        "src/adapters/meituan-collector.ts",
+        "src/adapters/meituan-collect.ts",
+        "scripts/bd-acceptance.ts"
+      ],
+      "fix_commit": "fc2d73d",
+      "status": "verified",
+      "first_seen": "2026-11-18",
+      "verified_at": "2026-11-19",
+      "verified_runs": [],
+      "note": "绝不自动破解验证码。"
+    },
+    {
+      "id": "F-19",
+      "title": "结算页整页读取模型 60 秒硬超时",
+      "platforms": [
+        "taobao_instant",
+        "meituan"
+      ],
+      "error_codes": [
+        "model_timeout_or_cancelled"
+      ],
+      "step": "checkout",
+      "symptom": "结算页读取卡住约 60 秒后中止，整次尝试失败。",
+      "root_cause": "本地小模型偶发 60 秒硬超时，一次读取异常直接向上抛。",
+      "fix": "读取异常降级为空行，交给外层重试循环再截图再读，最多 3 次。",
+      "code_files": [
+        "src/adapters/taobao-collect.ts",
+        "src/adapters/meituan-collector.ts"
+      ],
+      "fix_commit": "38ffd8f",
+      "status": "pending",
+      "first_seen": "2026-11-19",
+      "verified_at": null,
+      "verified_runs": [],
+      "note": "待优化批次批量验证失败率是否下降。"
+    },
+    {
+      "id": "F-20",
+      "title": "美团分店替换被误判为目标不一致",
+      "platforms": [
+        "meituan"
+      ],
+      "error_codes": [
+        "resolved_target_mismatch"
+      ],
+      "step": "identity",
+      "symptom": "报价已拿到但合同校验失败：地址为空或实际分店与配置不同。",
+      "root_cause": "校验要求地址非空和目标编号一致，未落实同城同品牌不同分店规则。",
+      "fix": "有缺失原因时允许地址为空；映射版本一致时允许目标编号变化，实际分店写入观察结果。",
+      "code_files": [
+        "src/domain/contracts.ts"
+      ],
+      "fix_commit": "ed0eaf4",
+      "status": "verified",
+      "first_seen": "2026-11-19",
+      "verified_at": "2026-11-19",
+      "verified_runs": [
+        "44f84274",
+        "82d612a7"
+      ],
+      "note": ""
+    },
+    {
+      "id": "F-21",
+      "title": "美团导航前手机锁屏导致前台丢失",
+      "platforms": [
+        "meituan"
+      ],
+      "error_codes": [
+        "target_app_not_foreground"
+      ],
+      "step": "navigate",
+      "symptom": "美团步骤中途报前台不在目标应用。",
+      "root_cause": "手机空闲后锁屏，前台校验不通过。",
+      "fix": "进入美团导航前先唤醒屏幕并解除锁屏。",
+      "code_files": [
+        "src/adapters/meituan-collector.ts"
+      ],
+      "fix_commit": "453ea25",
+      "status": "pending",
+      "first_seen": "2026-11-19",
+      "verified_at": null,
+      "verified_runs": [],
+      "note": "修复后未再出现，但还需更多组验证。"
+    },
+    {
+      "id": "F-22",
+      "title": "淘宝首页活动弹层遮住标签栏",
+      "platforms": [
+        "taobao_instant"
+      ],
+      "error_codes": [
+        "taobao_channel_entry_failed"
+      ],
+      "step": "channel_entry",
+      "symptom": "点闪购标签画面几乎不动，连续失败。",
+      "root_cause": "首页活动弹层拦截点击，截图差异极小。",
+      "fix": "用中心红色占比识别弹层，点关闭并补返回键。",
+      "code_files": [
+        "src/adapters/taobao-collect.ts"
+      ],
+      "fix_commit": "5903009",
+      "status": "verified",
+      "first_seen": "2026-11-19",
+      "verified_at": "2026-11-19",
+      "verified_runs": [
+        "82d612a7"
+      ],
+      "note": ""
+    },
+    {
+      "id": "F-23",
+      "title": "淘宝加购把搜索框文字误当商品行",
+      "platforms": [
+        "taobao_instant"
+      ],
+      "error_codes": [
+        "taobao_item_locate_failed",
+        "taobao_payable_unverified"
+      ],
+      "step": "add_to_cart",
+      "symptom": "加购后购物车出现别的商品，结算页金额异常。",
+      "root_cause": "候选行文字含搜索框同名商品名，原逻辑只判断标题相等。",
+      "fix": "候选行必须带月售，且不能出现搜索或状态栏时间。",
+      "code_files": [
+        "src/adapters/taobao-collect.ts"
+      ],
+      "fix_commit": "5903009",
+      "status": "verified",
+      "first_seen": "2026-11-19",
+      "verified_at": "2026-11-19",
+      "verified_runs": [
+        "a5f1245a",
+        "82d612a7"
+      ],
+      "note": ""
+    },
+    {
+      "id": "F-24",
+      "title": "淘宝点门店卡误入商品详情页",
+      "platforms": [
+        "taobao_instant"
+      ],
+      "error_codes": [
+        "taobao_store_entry_failed",
+        "taobao_store_unverified"
+      ],
+      "step": "store_entry",
+      "symptom": "点门店卡后进了商品详情，再把详情页当门店页读。",
+      "root_cause": "商品缩略图和门店卡相邻，视觉定位偶发点错且无页面身份校验。",
+      "fix": "点完必须同时看到点餐、评价、品牌三个标签，不对就返回重试，仍不对明确失败。",
+      "code_files": [
+        "src/adapters/taobao-collect.ts"
+      ],
+      "fix_commit": "453ea25",
+      "status": "pending",
+      "first_seen": "2026-11-19",
+      "verified_at": null,
+      "verified_runs": [],
+      "note": "修复后未再出现，仍需更多组验证。"
+    },
+    {
+      "id": "F-25",
+      "title": "美团“更多”菜单误点列表结尾文字",
+      "platforms": [
+        "meituan"
+      ],
+      "error_codes": [
+        "cart_entry_missing"
+      ],
+      "step": "cart_precheck/cleanup",
+      "symptom": "找购物车入口时点到“没有更多了”和“更多好价”。",
+      "root_cause": "“更多”模糊匹配范围太宽。",
+      "fix": "只匹配文字恰好是更多且位于页面上部的节点；清理改走全局购物车管理模式删除。",
+      "code_files": [
+        "src/adapters/meituan-collector.ts"
+      ],
+      "fix_commit": "5abb6cc",
+      "status": "verified",
+      "first_seen": "2026-11-19",
+      "verified_at": "2026-11-19",
+      "verified_runs": [
+        "e6d3654c"
+      ],
+      "note": ""
+    },
+    {
+      "id": "F-26",
+      "title": "淘宝空车预检读到商家公告区",
+      "platforms": [
+        "taobao_instant"
+      ],
+      "error_codes": [
+        "cart_preflight_unverified"
+      ],
+      "step": "cart_precheck",
+      "symptom": "底栏读到的全是商家公告和说明。",
+      "root_cause": "点完点餐或恢复前台后页面停在公告区，底栏截图取错区域。",
+      "fix": "底栏读不到购物车文字时先滚动回顶部再重读，最多 3 次。",
+      "code_files": [
+        "src/adapters/taobao-collect.ts"
+      ],
+      "fix_commit": "e71f0026",
+      "status": "pending",
+      "first_seen": "2026-11-19",
+      "verified_at": null,
+      "verified_runs": [],
+      "note": "修复后批次继续推进，仍需更多组验证。"
+    },
+    {
+      "id": "F-27",
+      "title": "组级超时中止",
+      "platforms": [
+        "*"
+      ],
+      "error_codes": [
+        "This operation was aborted",
+        "The operation was aborted"
+      ],
+      "step": "group",
+      "symptom": "整组运行到 963 秒被中止，多个平台一起失败。",
+      "root_cause": "入口重试、模型超时和恢复步骤叠加超过单组 900 秒预算。",
+      "fix": "待优化：给每个阶段设硬预算，失败快速返回；当前先保留失败记录不算成功。",
+      "code_files": [],
+      "fix_commit": null,
+      "status": "pending",
+      "first_seen": "2026-11-19",
+      "verified_at": null,
+      "verified_runs": [],
+      "note": "计划在优化批次解决。"
+    },
+    {
+      "id": "F-28",
+      "title": "京东费用明细长期部分成功",
+      "platforms": [
+        "jd"
+      ],
+      "error_codes": [
+        "jd_partial_detail_incomplete"
+      ],
+      "step": "checkout",
+      "symptom": "京东每组都只有金额，配送费和打包费明细缺失，detail_complete 为 false。",
+      "root_cause": "京东结算页是自绘页面，费用行偶尔读不到或识别不全。",
+      "fix": "待优化：补京东结算页费用行读取，先做双读和固定区域兜底。",
+      "code_files": [],
+      "fix_commit": null,
+      "status": "pending",
+      "first_seen": "2026-11-19",
+      "verified_at": null,
+      "verified_runs": [],
+      "note": "补齐前不把京东算作完整成功。"
+    },
+    {
+      "id": "F-29",
+      "title": "京东停留在搜索页或详情页导致首页读取失败",
+      "platforms": [
+        "jd"
+      ],
+      "error_codes": [
+        "page_not_ready"
+      ],
+      "step": "launch",
+      "symptom": "京东启动后恢复上次停留的搜索页，等待首页或结果页超时。",
+      "root_cause": "京东会恢复上次停留的子页面，直接启动主界面只是把旧任务带回前台。",
+      "fix": "启动后读前台 Activity，命中搜索/详情等子页面就按返回键退回首页；首页读取失败再重启重试一次。",
+      "code_files": [
+        "src/adapters/android-collector.ts",
+        "src/adapters/jd-shelf-collector.ts"
+      ],
+      "fix_commit": "2954409",
+      "status": "verified",
+      "first_seen": "2026-11-18",
+      "verified_at": "2026-11-19",
+      "verified_runs": [],
+      "note": ""
+    },
+    {
+      "id": "F-30",
+      "title": "淘宝品牌搜索提交方式变化",
+      "platforms": [
+        "taobao_instant"
+      ],
+      "error_codes": [
+        "taobao_brand_search_failed"
+      ],
+      "step": "brand_search",
+      "symptom": "输入品牌后点橙色按钮或回车只弹建议下拉，不进入结果页。",
+      "root_cause": "搜索提交改为键盘右下角搜索键，旧方式只触发展开建议。",
+      "fix": "用键盘搜索键提交，再用截图差异和排序栏确认进入结果页；橙色按钮和回车作为兜底。",
+      "code_files": [
+        "src/adapters/taobao-collect.ts"
+      ],
+      "fix_commit": "665c0bd",
+      "status": "pending",
+      "first_seen": "2026-11-18",
+      "verified_at": null,
+      "verified_runs": [],
+      "note": "白天多次成功，夜间仍偶发，需继续观察。"
+    },
+    {
+      "id": "F-31",
+      "title": "美团结算页是 WebView 读不到节点",
+      "platforms": [
+        "meituan"
+      ],
+      "error_codes": [
+        "meituan_no_checkout",
+        "meituan_checkout_item_unverified"
+      ],
+      "step": "checkout",
+      "symptom": "点去结算后节点为空，或商品/费用核对失败。",
+      "root_cause": "美团结算页为 WebView 自绘，u2 和 dump 都读不到稳定文字。",
+      "fix": "结算页改整页截图读文字，应付双读一致、费用行加减核对、商品名和数量核对；读取失败重拍重读。",
+      "code_files": [
+        "src/adapters/meituan-collector.ts",
+        "src/adapters/meituan-collect.ts"
+      ],
+      "fix_commit": "a60211a",
+      "status": "pending",
+      "first_seen": "2026-11-17",
+      "verified_at": null,
+      "verified_runs": [],
+      "note": "历史成功多次，但仍有偶发入口失败。"
+    }
+  ]
+}

@@ -48,9 +48,13 @@ python scripts/diagrams/draw_ue_flowcharts.py
 | `bd-review-evidence.ts` | 逐份复核有效报价：下载结算/门店/商品证据、核对哈希、用 Windows OCR 独立识读页面文字，输出人工复核清单；用法 `npx tsx scripts/bd-review-evidence.ts --runs=<id1,id2>` 或 `--batch=<批次目录>`。 |
 | `freeze-baseline.ts` | 冻结验收基线：记录代码提交、构建产物与配置哈希、模型与设备状态，并用 VACUUM INTO 生成数据库一致性副本；用法 `npx tsx scripts/freeze-baseline.ts --label=A`。工作区不干净时退出码为 2，不能用于正式验收。 |
 
-## 失败知识库
+## 失败知识库与自愈闭环
 
 - 每次真机采集失败/异常都会自动追加到 `.runtime/knowledge/attempts.jsonl`（结构化事实：平台、错误码、清理状态、最近步骤；不含页面隐私）。
 - `npx tsx scripts/knowledge-report.ts [--platform=taobao_instant]` 查看失败汇总、最近记录，以及哪些错误码还没有整理成经验条目。
 - 整理后的经验统一写在 `前期调研/41_失败与修复知识库.md`，每条经验必须包含现象、证据、根因、修复方式、验证状态；修复后要把对应经验回归写成自动测试或真机复验记录。
+- 机器可读的失败模式与修复登记在 `前期调研/42_失败模式注册表.json`；每次失败自动匹配条目，`npx tsx scripts/knowledge-registry.ts check --days=7` 自动找出未登记签名和已修复又出现的回退风险。
+- 批次脚本开跑前自动打印知识库预检，跑完自动在批次目录生成 `failure-digest.md`；机制说明见 `进度与实验记录/07_自愈闭环说明.md`。
 - 采集前先看对应平台的经验条目，避免重复踩同一个坑。
+| `knowledge-lib.ts` | 自愈知识库共享逻辑：读取失败记录和失败模式注册表、聚合失败签名、检测回退、生成失败摘要。 |
+| `knowledge-registry.ts` | 失败模式注册表命令：`list` 查看条目，`check [--days=7] [--write=<路径>]` 生成摘要并检查回退，`verify <编号> --run <运行编号>` 标注真机验证。 |

@@ -562,7 +562,8 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
           };
           const clearViaCartPanel = async (): Promise<boolean> => {
             try {
-              const sw = physicalRef?.width ?? 1260, sh = physicalRef?.height ?? 2844;
+              const sw = physicalRef?.width ?? 0, sh = physicalRef?.height ?? 0;
+              if (!sw || !sh) return false;
               if (!(await ensureStorePage())) return false;
               // 门店页左下角购物车图标打开已选商品面板，面板右上角有“清空”。
               await adbShell(['shell', 'input', 'tap', String(Math.round(sw * 0.11)), String(Math.round(sh * 0.96))]);
@@ -592,7 +593,8 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
               const densityText = String((await adbShell(['shell', 'wm', 'density']))?.stdout ?? '');
               const density = Number(/density:\s*(\d+)/i.exec(densityText)?.[1] ?? 540);
               const ratio = density / 160;
-              const W = physicalRef?.width ?? 1260, H = physicalRef?.height ?? 2844;
+              const W = physicalRef?.width ?? 0, H = physicalRef?.height ?? 0;
+              if (!W || !H) return false;
               const tapDp = async (left: number, top: number, width = 0, height = 0) => {
                 const x = Math.round((left + width / 2) * ratio), y = Math.round((top + height / 2) * ratio);
                 await adbShell(['shell', 'input', 'tap', String(x), String(y)]);
