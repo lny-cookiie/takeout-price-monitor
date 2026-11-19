@@ -502,7 +502,44 @@ export function liveMeituanCollector(opts: MeituanCollectorOptions): Collector {
           await semantic.back();
           await new Promise(r => setTimeout(r, 1_500));
           let restored = false;
-          // 优先用“…”菜单进购物车页核对（读文字，不依赖底栏渲染）：没有目标门店分组就说明本次加购已移除。
+          // 清理优先走“门店购物车页 + 管理模式全选删除”：任务开始时已确认目标店空车，
+          // 所以该店购物车里的商品只可能是本次加购；整页删除比逐个找减号更可靠。
+          const clearStoreCartViaManage = async (): Promise<boolean> => {
+            try {
+              const more = await semantic!.find(n => /更多|更多选项/.test(nodeLabel(n)), 1_500).catch(() => null);
+              if (!more) return false;
+              await semantic!.tap(more, '更多菜单');
+              await new Promise(r => setTimeout(r, 1_200));
+              const cartEntry = await semantic!.find(n => nodeLabel(n).trim() === '购物车', 2_500).catch(() => null);
+              if (!cartEntry) return false;
+              await semantic!.tap(cartEntry, '购物车入口');
+              await semantic!.waitStable(4);
+              const before = (await semantic!.read()).map(n => nodeLabel(n).trim());
+              const listed = before.some(l => l.includes(brand) && /店/.test(l));
+              console.log('[meituan] 门店购物车页核对', JSON.stringify({ listed, sample: before.filter(l => /购物车|麦当劳/.test(l)).slice(0, 6) }));
+              if (!listed) { await semantic!.back(); await semantic!.waitStable(2); return true; }
+              const manage = await semantic!.find(n => nodeLabel(n).trim() === '管理', 2_000).catch(() => null);
+              if (!manage) return false;
+              await semantic!.tap(manage, '管理');
+              await semantic!.waitStable(2);
+              const selectAll = await semantic!.find(n => nodeLabel(n).trim() === '全选', 2_000).catch(() => null);
+              if (selectAll) { await semantic!.tap(selectAll, '全选'); await semantic!.waitStable(1); }
+              const del = await semantic!.find(n => /删除/.test(nodeLabel(n)), 2_000).catch(() => null);
+              if (!del) return false;
+              await semantic!.tap(del, '删除');
+              await semantic!.waitStable(2);
+              const confirm = await semantic!.find(n => nodeLabel(n).trim() === '删除' || nodeLabel(n).trim() === '确定', 2_000).catch(() => null);
+              if (confirm) { await semantic!.tap(confirm, '确认删除'); await semantic!.waitStable(2); }
+              const after = (await semantic!.read()).map(n => nodeLabel(n).trim());
+              const stillListed = after.some(l => l.includes(brand) && /店/.test(l));
+              console.log('[meituan] 管理模式删除后核对', JSON.stringify({ stillListed }));
+              await semantic!.back();
+              await semantic!.waitStable(2);
+              return !stillListed;
+            } catch { return false; }
+          };
+          restored = await clearStoreCartViaManage();
+          // 兜底：优先用“…”菜单进购物车页核对（读文字，不依赖底栏渲染）：没有目标门店分组就说明本次加购已移除。
           try {
             const more = await semantic!.find(n => /更多|更多选项/.test(nodeLabel(n)), 1_500).catch(() => null);
             if (more) await semantic!.tap(more, '更多菜单');
