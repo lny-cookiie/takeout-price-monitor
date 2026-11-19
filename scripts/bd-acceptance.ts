@@ -18,6 +18,8 @@ const label = args.label ?? 'A';
 const groups = Number(args.groups ?? 20);
 // 组之间冷却，降低美团风控触发概率；验证码一旦出现批次立即停止，等人处理。
 const cooldownMs = Number(args.cooldown ?? process.env.TAKEOUT_ACCEPTANCE_COOLDOWN_MS ?? 120_000);
+// v2 没有把“三家观察时间差”定成固定分钟数；单机串行跑完三家天然有 8-9 分钟差。这里以 v2 的单组预算 900 秒（15 分钟）作为同组窗口上限，实际差值逐组记录。 
+const maxSkewMin = Number(args['max-skew-min'] ?? process.env.TAKEOUT_MAX_SKEW_MIN ?? 15);
 const inputPath = args.input ?? 'scripts/bd-batch.example.json';
 const outRoot = resolve(args.dir ?? '.runtime/acceptance');
 const platformId = (value: string): 'jd' | 'meituan' | 'taobao_instant' | null => {
@@ -124,7 +126,7 @@ for (let round = 1; round <= groups; round++) {
         observedAt: obs?.observed_at ?? null, store: slot.context?.store ?? null, item: slot.item, spec: slot.spec,
         evidenceId: obs?.evidence_refs?.[0]?.id ?? null, evidenceVerified: evidenceOk,
         missingKeys: Object.keys(obs?.details?.missing ?? {}), attempts: slot.attempts?.length ?? null,
-        quoteMs: slot.quoteMs ?? null, timings: slot.timings ?? null,
+        quoteMs: slot.quoteMs ?? null, timings: slot.timings ?? null, detailComplete: obs?.detail_complete ?? null,
       });
     }
     const valid = slotRows.filter(r => r.quoteValid);
@@ -132,8 +134,9 @@ for (let round = 1; round <= groups; round++) {
     const times = valid.map(r => Date.parse(String(r.observedAt))).filter(Number.isFinite);
     const skewMinutes = times.length > 1 ? (Math.max(...times) - Math.min(...times)) / 60_000 : null;
     const evidenceAll = slotRows.every(r => r.evidenceVerified === true);
-    const groupComplete = valid.length === plan.platforms.length && clean && evidenceAll && (skewMinutes == null || skewMinutes <= 5);
-    rows.push({round, cold, runId, elapsedMs, groupComplete, skewMinutes, clean, evidenceAll, slots: slotRows});
+    const groupComplete = valid.length === plan.platforms.length && clean && evidenceAll && (skewMinutes == null || skewMinutes <= maxSkewMin);
+    const fullSuccess = slotRows.length === plan.platforms.length && slotRows.every(r => r.status === 'success' && r.detailComplete === true);
+    rows.push({round, cold, runId, elapsedMs, groupComplete, fullSuccess, skewMinutes, clean, evidenceAll, slots: slotRows});
     await appendFile(join(dir, 'rows.jsonl'), JSON.stringify(rows.at(-1)) + '\n');
     console.log(`第 ${round}/${groups} 组 ${groupComplete ? '完整成功' : '未达完整'}：${(elapsedMs / 1000).toFixed(0)}s，有效 ${valid.length}/${plan.platforms.length}`);
     const blocked = slotRows.some(r => ['quarantined', 'needs_attention'].includes(String(r.cleanup)) || /captcha|access_restricted|rate_limited|source_blocked/.test(String(r.error ?? '')));
