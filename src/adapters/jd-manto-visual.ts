@@ -1,5 +1,6 @@
 // 京东 Manto 小程序门店页的视觉兜底：门店页节点不可读时，用截图定位单品、点开详情、点「立即购买」，
 // 再复用已有的视觉结算读取（隐私涂黑、金额双读、费用核对）。
+import { randomUUID } from 'node:crypto';
 import { setTimeout as wait } from 'node:timers/promises';
 import type { Evidence } from '../domain/contracts.js';
 import { CollectionError } from '../domain/contracts.js';
@@ -46,8 +47,9 @@ export async function readMantoCheckout(
   signal: AbortSignal,
   itemName: string,
   contextProof: string[] = [],
-): Promise<{ checkout: VerifiedCheckout; itemDetailEvidence: Evidence | null }> {
+): Promise<{ checkout: VerifiedCheckout; storeEvidence: Evidence; itemEvidence: Evidence }> {
   const first = await screen.device.screenshot(signal);
+  const storeEvidence = await evidenceStore.save(randomUUID(), 'store', first, JSON.stringify({ mode: 'manto_visual', item: itemName }), 'live', new Date().toISOString());
   // 门店页上先定位目标单品文字；点文字所在行会打开商品详情。
   const [itemX, itemY] = await model.locate(attemptId, first, itemName, signal);
   signal.throwIfAborted();
@@ -55,6 +57,7 @@ export async function readMantoCheckout(
   await wait(2_500, undefined, { signal });
 
   const detail = await screen.device.screenshot(signal);
+  const itemEvidence = await evidenceStore.save(randomUUID(), 'item', detail, JSON.stringify({ mode: 'manto_visual', item: itemName }), 'live', new Date().toISOString());
   let kind = await pageKind(model, attemptId, detail, signal, 'manto_page_kind');
   if (kind === 'checkout') {
     // 有些门店点单品后直接进结算页，跳过详情页。
@@ -82,5 +85,5 @@ export async function readMantoCheckout(
 
   // 复用京东已有的视觉结算读取：隐私区涂黑、保存证据、金额双读一致才发布。
   const checkout = await captureVisualCheckout(screen, model, evidenceStore, attemptId, signal, contextProof, { itemName, quantity: 1 });
-  return { checkout, itemDetailEvidence: null };
+  return { checkout, storeEvidence, itemEvidence };
 }

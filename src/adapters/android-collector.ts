@@ -11,6 +11,7 @@ import type { ModelGateway } from '../infra/model.js';
 import { cropBoxes, flatten, resourceOf, textOf } from './android-page.js';
 import { captureCheckout, verifyCheckout, compactEvidence } from './checkout-reading.js';
 import { captureVisualCheckout } from './visual-checkout.js';
+import { readMantoCheckout } from './jd-manto-visual.js';
 import { privacyBandMask } from './checkout-privacy.js';
 import {PAGE_ONTOLOGY_VERSION,mapVersion,executionPages} from '../domain/page-ontology.js';
 export { resourceOf, textOf } from './android-page.js';
@@ -374,7 +375,43 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
             emit?.({phase:'launch_retry',state:'started'});
             await device!.launch(true);
             await wait(3_000,undefined,{signal});
-            verified=await jd.openJdStore(screen,task.jdOrigin,attemptId,signal,model,evidenceStore,emit,true);
+            try {
+              verified=await jd.openJdStore(screen,task.jdOrigin,attemptId,signal,model,evidenceStore,emit,true);
+            } catch (retryError) {
+              if (!(retryError instanceof CollectionError && retryError.code==='page_not_ready')) throw retryError;
+              // 京东门店可能换成 Manto 小程序容器：节点树为空，原节点链路无法核验身份和菜单。
+              // 节点数很少且截图可用时，转入视觉门店策略（定位单品→立即购买→视觉读取结算页）。
+              const probe = await screen.nodes(true).catch(()=>[] as UiNode[]);
+              const textCount = probe.reduce((sum,node)=>sum + (String(node.attrs.text ?? node.attrs['content-desc'] ?? '').trim() ? 1 : 0),0);
+              if (textCount >= 5) throw retryError;
+              emit?.({phase:'manto_visual',state:'started',data:{nodes:probe.length,textCount}});
+              const visual=await readMantoCheckout(screen,model,evidenceStore,attemptId,signal,item.name,[]);
+              const read=visual.checkout;
+              const component=(value:{fen:number;raw:string}|null):MoneyComponent=>value?{amount_fen:value.fen,raw_value:value.raw,basis:'separately_displayed',included_in:'checkout_payable'}:
+                {amount_fen:null,raw_value:null,basis:'unknown',included_in:null};
+              const deliveryValue=read.components.delivery, packagingValue=read.components.packaging;
+              const complete=deliveryValue!==null&&packagingValue!==null;
+              const frozen=context!;
+              observation={observation_id:randomUUID(),source_id:task.source_id,tenant_id:task.tenant_id,slot_id:task.slot_id,attempt_id:attemptId,platform,
+                store_id:task.store_id,basket_id:task.basket_id,scenario_id:task.scenario_id,price_kind:'checkout_payable',price_scope:'basket',currency:'CNY',
+                amount_fen:read.total,raw_value:read.raw,components:{delivery_fee:component(deliveryValue),packaging_fee:component(packagingValue)},
+                missing_reasons:{...(deliveryValue===null?{delivery_fee:'not_verified'}:{}),...(packagingValue===null?{packaging_fee:'not_verified'}:{})},
+                observed_at:read.evidence.captured_at,collected_at:new Date().toISOString(),value_origin:'observed',quote_valid:true,detail_complete:complete,
+                basket_items:[{product_id:frozen.target.id,name:item.name,variant:frozen.mapping?.candidate.supply.item.spec ?? item.spec,quantity:1}],
+                account_ref:task.account_ref,delivery_point_id:task.delivery_point_id,entry_point:task.entry_point,evidence_refs:[read.evidence],contract_version:task.contract_version,collector_version:'android-0.4.0',
+                details:{components:read.components,subtotalBasis:read.basis,feesSeparate:read.feesSeparate,eta:read.eta,coupons:read.coupons,couponCandidates:read.couponCandidates,
+                  missing:read.missing,reconciled:read.reconciled,contextEvidence:read.evidence,storeEvidence:visual.storeEvidence,itemEvidence:visual.itemEvidence,
+                  fieldResults:read.fieldResults,supplementaryEvidence:read.supplementaryEvidence}};
+              evidence=read.evidence;
+              status=complete?'success':'partial';
+              availability='available';
+              quoteReadyAt=new Date().toISOString();
+              cleanup='untouched';
+              emit?.({phase:'manto_visual',state:'succeeded',data:{checkoutFen:read.total,complete},evidenceIds:[read.evidence.id]});
+              note('manto_visual','门店页为小程序容器，已走视觉门店策略');
+              return {status,error_code:null,availability,observation,evidence,resolvedLive:context,quoteReadyAt,pageMap,timings:metrics,trace,
+                started_at,finished_at:new Date().toISOString(),cleanup,cost:{model_yuan:cost(attemptId),execution_ms:Date.now()-start}};
+            }
           }
           if (!task.specified && digest(verified.store)!==digest(store)) throw new CollectionError('store_identity_changed','blocked');
           if(task.specified){store=verified.store;vars.store=store.name;vars.address=store.address;}

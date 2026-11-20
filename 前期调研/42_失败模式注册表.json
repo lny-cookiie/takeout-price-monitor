@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-20T06:53:43.740Z",
+  "updated_at": "2026-11-20T07:46:48.338Z",
   "note": "机器可读的失败模式与修复注册表。每次失败自动匹配 error_codes；修复后必须用 scripts/knowledge-registry.ts verify 标注运行编号。状态 verified 的条目一旦再次出现同错误码，check 命令会报 regressed。",
   "entries": [
     {
@@ -388,7 +388,7 @@
       "first_seen": "2026-11-20",
       "verified_at": null,
       "verified_runs": [],
-      "note": "视觉探针已跑通；代码模块 src/adapters/jd-manto-visual.ts 已建立并通过编译与单元测试，下一步接入 android-collector 的 page_not_ready 兜底分支并做单平台真机验证。"
+      "note": "视觉兜底已接入 android-collector（第二次 page_not_ready 且节点文字少于 5 时触发），编译构建通过；手机被占用，真机验证待做。"
     }
   ]
 }
