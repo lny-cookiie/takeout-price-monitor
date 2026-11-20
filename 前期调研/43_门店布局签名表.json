@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "updated_at": "2026-11-20T15:55:00+08:00",
+  "note": "门店页面布局签名与策略选择表。采集器先按平台、前台 Activity 和节点可读性匹配；匹配不到时按节点可读性退选，并记录未知布局等待人工确认。",
+  "entries": [
+    {
+      "id": "jd-webview-pilot",
+      "platform": "jd",
+      "activity": "com.jingdong.app.mall",
+      "node_readable": true,
+      "strategy": "node_shelf",
+      "stores": ["麦当劳＆麦咖啡（天津鞍山西店）"],
+      "status": "verified",
+      "first_seen": "2026-11-18",
+      "verified_runs": ["3de00081", "904bfb9b", "82d612a7"],
+      "notes": "京东试点门店页为 WebView，u2/dump 可读；原节点货架链路可用。"
+    },
+    {
+      "id": "jd-manto-kangshifu",
+      "platform": "jd",
+      "activity": "com.jingdong.manto.card.MantoLightActivity",
+      "node_readable": false,
+      "strategy": "manto_visual",
+      "stores": ["康师傅私房牛肉面（泰达荟店）", "康师傅私房牛肉面（万德庄店）", "康师傅私房牛肉面（大沽南路2店）"],
+      "status": "pending",
+      "first_seen": "2026-11-20",
+      "verified_runs": [],
+      "notes": "Manto 小程序容器，u2 与 uiautomator 节点均为空；视觉探针已跑通，采集器接线完成，待真机验证。"
+    },
+    {
+      "id": "meituan-native",
+      "platform": "meituan",
+      "activity": null,
+      "node_readable": true,
+      "strategy": "node_shelf",
+      "stores": ["麦当劳＆麦咖啡（天津鞍山西店）"],
+      "status": "verified",
+      "first_seen": "2026-11-18",
+      "verified_runs": ["3de00081", "904bfb9b"],
+      "notes": "美团外卖门店页和结算页以原生节点加 WebView 截图混合读取。"
+    },
+    {
+      "id": "taobao-visual",
+      "platform": "taobao_instant",
+      "activity": null,
+      "node_readable": false,
+      "strategy": "visual_page",
+      "stores": ["麦当劳＆麦咖啡（天津鞍山西店）"],
+      "status": "verified",
+      "first_seen": "2026-11-18",
+      "verified_runs": ["3de00081", "82d612a7"],
+      "notes": "淘宝闪购原生 Flutter 页面节点为零，全程截图加视觉定位。"
+    }
+  ]
+}
