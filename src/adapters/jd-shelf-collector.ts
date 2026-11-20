@@ -383,9 +383,11 @@ export async function openJdStore(screen:ReviewedScreen,input:JdRunInput,attempt
       const results=()=>waitFor(screen,signal,ns=>{
         if (!matchingQuery(ns)) return undefined;
         // 搜索结果页加载中只有搜索框和少量节点；等门店卡片真正渲染（排除顶部搜索框）再匹配。
+        const brandKey=normalizeKey(input.brand);
         const cardVisible=ns.some(node=>{
           const label=normalizeKey(textOf(node));
-          return (label.includes('麦当劳')||label.includes('麦咖啡'))&&node.bounds.width>0&&node.bounds.height>0&&node.bounds.top>device.height*.08;
+          // 品牌关键词从任务输入推导，避免把单个品牌（麦当劳）写死导致换品牌后永远等不到结果卡片。
+          return brandKey.length>=2&&label.includes(brandKey)&&node.bounds.width>0&&node.bounds.height>0&&node.bounds.top>device.height*.08;
         });
         if (!cardVisible) return undefined;
         return !pilot.resultAnchor || searchAnchor(ns) ? ns : undefined;
