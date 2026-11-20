@@ -18,7 +18,7 @@ const version=(JSON.parse(await readFile('package.json','utf8')) as {version:str
 const files:string[]=[];
 async function walk(path:string){for(const entry of await readdir(path,{withFileTypes:true})){const child=path+'/'+entry.name;if(entry.isDirectory())await walk(child);else files.push(child);}}
 for(const path of ['src','tests','scripts','public'])await walk(path);
-files.push('package.json','package-lock.json','tsconfig.json','agent.md','README.md','CHANGELOG.md','数据治理/数据治理表.md','前期调研/19_指定包销品采集实施与验收.md','前期调研/21_三平台页面本体与取数地图.md','前期调研/22_京东采集技术基线与竞对接入.md');
+files.push('package.json','package-lock.json','tsconfig.json','agent.md','README.md','CHANGELOG.md','数据治理/数据治理表.md','ARCHITECTURE.md','产品目标/README.md','进度与实验记录/README.md','前期调研/README.md');
 const hashes=[];for(const file of files.sort())hashes.push({file,sha256:createHash('sha256').update(await readFile(file)).digest('hex')});
 const performance=Object.fromEntries(['warm','from_jd_home'].map(group=>{
   const selected=report.rows.filter(row=>row.group===group),quoteLimit=group==='warm'?60_000:90_000,endLimit=group==='warm'?90_000:120_000;
