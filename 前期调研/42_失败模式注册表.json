@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-19T09:37:55.562Z",
+  "updated_at": "2026-11-20T06:16:32.722Z",
   "note": "机器可读的失败模式与修复注册表。每次失败自动匹配 error_codes；修复后必须用 scripts/knowledge-registry.ts verify 标注运行编号。状态 verified 的条目一旦再次出现同错误码，check 命令会报 regressed。",
   "entries": [
     {
@@ -366,6 +366,29 @@
       "verified_at": null,
       "verified_runs": [],
       "note": "历史成功多次，但仍有偶发入口失败。"
+    },
+    {
+      "id": "F-33",
+      "title": "京东门店页为 Manto 小程序容器，节点不可读",
+      "platforms": [
+        "jd"
+      ],
+      "error_codes": [
+        "page_not_ready"
+      ],
+      "step": "store",
+      "symptom": "进入康师傅私房牛肉面门店后，u2 和 dump 都读不到任何节点，现有节点核验链路超时。",
+      "root_cause": "京东不同门店可能使用不同渲染容器：麦当劳门店是 WebView，康师傅门店是 MantoLightActivity 小程序容器，节点树为空。",
+      "fix": "待实现：按前台容器和节点数量识别布局，节点不可读时走截图加模型 OCR 的视觉门店策略；同时登记布局签名，避免每次重新分析。",
+      "code_files": [
+        "src/adapters/jd-shelf-collector.ts"
+      ],
+      "fix_commit": null,
+      "status": "pending",
+      "first_seen": "2026-11-20",
+      "verified_at": null,
+      "verified_runs": [],
+      "note": "布局自适应方案见 进度与实验记录/10_京东门店布局自适应方案_2026-11-20.md。"
     }
   ]
 }
