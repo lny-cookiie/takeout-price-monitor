@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-20T06:16:32.722Z",
+  "updated_at": "2026-11-20T06:51:58.718Z",
   "note": "机器可读的失败模式与修复注册表。每次失败自动匹配 error_codes；修复后必须用 scripts/knowledge-registry.ts verify 标注运行编号。状态 verified 的条目一旦再次出现同错误码，check 命令会报 regressed。",
   "entries": [
     {
@@ -388,7 +388,7 @@
       "first_seen": "2026-11-20",
       "verified_at": null,
       "verified_runs": [],
-      "note": "布局自适应方案见 进度与实验记录/10_京东门店布局自适应方案_2026-11-20.md。"
+      "note": "2026-11-20 视觉探针已跑通：门店页定位单品→详情页立即购买→Taro 结算页读取 28.63 元（商品 26、配送 2.6、优惠 27.37），未提交订单；待接入正式采集器。"
     }
   ]
 }
