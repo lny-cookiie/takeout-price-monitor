@@ -11,7 +11,8 @@ import type { ModelGateway } from '../infra/model.js';
 import { cropBoxes, flatten, resourceOf, textOf } from './android-page.js';
 import { captureCheckout, verifyCheckout, compactEvidence } from './checkout-reading.js';
 import { captureVisualCheckout } from './visual-checkout.js';
-import { readMantoCheckout } from './jd-manto-visual.js';
+import { readMantoCheckout, collectMantoAttempt } from './jd-manto-visual.js';
+import { dismissPopup } from './popup-guard.js';
 import { privacyBandMask } from './checkout-privacy.js';
 import {PAGE_ONTOLOGY_VERSION,mapVersion,executionPages} from '../domain/page-ontology.js';
 export { resourceOf, textOf } from './android-page.js';
@@ -21,6 +22,18 @@ const restricted = /请完成.{0,5}验证|验证码|滑动验证|人机验证/;
 const priceCheck = validator<{payable: string | null}>(object({payable:nullable(string(50))}),'报价');
 const menuPriceCheck = validator<{current: string | null}>(object({current:nullable(string(50))}),'商品现价');
 type JdNavigation=Pick<typeof import('./jd-shelf-collector.js'),'openJdStore'|'findJdMenuItem'|'returnToJdMenu'>;
+
+async function foregroundActivity(source: AndroidSource): Promise<string | null> {
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    const adbBin = process.env.MIDSCENE_ADB_PATH ?? 'adb';
+    const out = await run(adbBin, ['-s', source.device, 'shell', 'dumpsys', 'window'], { timeout: 8000, windowsHide: true, encoding: 'utf8' });
+    const match = /mCurrentFocus=Window\{[^}]*?\s([\w.]+)\/([\w.$]+)\}/.exec(String(out.stdout));
+    return match ? match[1] + '/' + match[2] : null;
+  } catch { return null; }
+}
 
 function moneyReading(raw:string|null|undefined):number|null {
   if (!raw) return null;
@@ -385,38 +398,22 @@ export function androidCollector(platform: Platform, sources: AndroidSources, mo
               const textCount = probe.reduce((sum,node)=>sum + (String(node.attrs.text ?? node.attrs['content-desc'] ?? '').trim() ? 1 : 0),0);
               if (textCount >= 5) throw retryError;
               emit?.({phase:'manto_visual',state:'started',data:{nodes:probe.length,textCount}});
-              const visual=await readMantoCheckout(screen,model,evidenceStore,attemptId,signal,item.name,[]);
-              const read=visual.checkout;
-              const component=(value:{fen:number;raw:string}|null):MoneyComponent=>value?{amount_fen:value.fen,raw_value:value.raw,basis:'separately_displayed',included_in:'checkout_payable'}:
-                {amount_fen:null,raw_value:null,basis:'unknown',included_in:null};
-              const deliveryValue=read.components.delivery, packagingValue=read.components.packaging;
-              const complete=deliveryValue!==null&&packagingValue!==null;
-              const frozen=context!;
-              observation={observation_id:randomUUID(),source_id:task.source_id,tenant_id:task.tenant_id,slot_id:task.slot_id,attempt_id:attemptId,platform,
-                store_id:task.store_id,basket_id:task.basket_id,scenario_id:task.scenario_id,price_kind:'checkout_payable',price_scope:'basket',currency:'CNY',
-                amount_fen:read.total,raw_value:read.raw,components:{delivery_fee:component(deliveryValue),packaging_fee:component(packagingValue)},
-                missing_reasons:{...(deliveryValue===null?{delivery_fee:'not_verified'}:{}),...(packagingValue===null?{packaging_fee:'not_verified'}:{})},
-                observed_at:read.evidence.captured_at,collected_at:new Date().toISOString(),value_origin:'observed',quote_valid:true,detail_complete:complete,
-                basket_items:[{product_id:frozen.target.id,name:item.name,variant:frozen.mapping?.candidate.supply.item.spec ?? item.spec,quantity:1}],
-                account_ref:task.account_ref,delivery_point_id:task.delivery_point_id,entry_point:task.entry_point,evidence_refs:[read.evidence],contract_version:task.contract_version,collector_version:'android-0.4.0',
-                details:{components:read.components,subtotalBasis:read.basis,feesSeparate:read.feesSeparate,eta:read.eta,coupons:read.coupons,couponCandidates:read.couponCandidates,
-                  missing:read.missing,reconciled:read.reconciled,contextEvidence:read.evidence,storeEvidence:visual.storeEvidence,itemEvidence:visual.itemEvidence,
-                  fieldResults:read.fieldResults,supplementaryEvidence:read.supplementaryEvidence}};
-              evidence=read.evidence;
-              status=complete?'success':'partial';
-              availability='available';
-              quoteReadyAt=new Date().toISOString();
-              cleanup='untouched';
-              emit?.({phase:'manto_visual',state:'succeeded',data:{checkoutFen:read.total,complete},evidenceIds:[read.evidence.id]});
-              note('manto_visual','门店页为小程序容器，已走视觉门店策略');
-              return {status,error_code:null,availability,observation,evidence,resolvedLive:context,quoteReadyAt,pageMap,timings:metrics,trace,
-                started_at,finished_at:new Date().toISOString(),cleanup,cost:{model_yuan:cost(attemptId),execution_ms:Date.now()-start}};
+              return await collectMantoAttempt({screen,model,evidenceStore,attemptId,signal,task,item,platform,trace,timings:metrics,startedAt:started_at,pageMap,cost});
             }
           }
           if (!task.specified && digest(verified.store)!==digest(store)) throw new CollectionError('store_identity_changed','blocked');
           if(task.specified){store=verified.store;vars.store=store.name;vars.address=store.address;}
           nodes=verified.nodes;
           shopProof=verified.evidence;
+          // 门店页经常在进入后弹出优惠券浮层，先快速关掉，避免菜单读取被遮挡。
+          await dismissPopup(screen,model,evidenceStore,attemptId,signal);
+          // 门店页可能已切到 Manto 小程序容器：节点能读到身份但菜单结构不同，直接走视觉门店策略。
+          const activity=await foregroundActivity(source);
+          if(activity && /MantoLightActivity/.test(activity)) {
+            emit?.({phase:'manto_visual',state:'started',data:{activity}});
+            note('manto_visual','检测到京东小程序门店容器，转入视觉采集。');
+            return await collectMantoAttempt({screen,model,evidenceStore,attemptId,signal,task,item,platform,trace,timings:metrics,startedAt:started_at,pageMap,cost});
+          }
           // 门店页最底部的“满¥30运费¥3”就是配送费（与打包费合并显示），先记下来，结算页没有独立行时用它。
           const pageNodes=await screen.nodes(true).catch(()=>[] as UiNode[]);
           const freightNode=pageNodes.find(node=>/运费¥?\d+/.test(textOf(node)));

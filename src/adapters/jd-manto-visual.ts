@@ -7,6 +7,7 @@ import { CollectionError } from '../domain/contracts.js';
 import type { ModelGateway } from '../infra/model.js';
 import type { EvidenceStore } from '../infra/evidence.js';
 import { captureVisualCheckout } from './visual-checkout.js';
+import { dismissPopup } from './popup-guard.js';
 import type { ReviewedScreen } from './android-collector.js';
 import type { VerifiedCheckout } from './checkout-reading.js';
 
@@ -47,43 +48,100 @@ export async function readMantoCheckout(
   signal: AbortSignal,
   itemName: string,
   contextProof: string[] = [],
-): Promise<{ checkout: VerifiedCheckout; storeEvidence: Evidence; itemEvidence: Evidence }> {
+): Promise<{ checkout: VerifiedCheckout; storeEvidence: Evidence; itemEvidence: Evidence; cleanup: 'restored' | 'untouched' }> {
+  await dismissPopup(screen, model, evidenceStore, attemptId, signal);
   const first = await screen.device.screenshot(signal);
   const storeEvidence = await evidenceStore.save(randomUUID(), 'store', first, JSON.stringify({ mode: 'manto_visual', item: itemName }), 'live', new Date().toISOString());
-  // 门店页上先定位目标单品文字；点文字所在行会打开商品详情。
-  const [itemX, itemY] = await model.locate(attemptId, first, itemName, signal);
-  signal.throwIfAborted();
-  await screen.device.tap(itemX, itemY);
-  await wait(2_500, undefined, { signal });
 
-  const detail = await screen.device.screenshot(signal);
-  const itemEvidence = await evidenceStore.save(randomUUID(), 'item', detail, JSON.stringify({ mode: 'manto_visual', item: itemName }), 'live', new Date().toISOString());
-  let kind = await pageKind(model, attemptId, detail, signal, 'manto_page_kind');
-  if (kind === 'checkout') {
-    // 有些门店点单品后直接进结算页，跳过详情页。
-  } else if (kind === 'item_detail') {
-    const [buyX, buyY] = await model.locate(attemptId, detail, '立即购买', signal);
-    signal.throwIfAborted();
-    await screen.device.tap(buyX, buyY);
-    await wait(3_500, undefined, { signal });
-  } else {
-    // 第一次点偏了或页面没跳转：重拍一次再定位，仍不对就明确失败并保留截图给人工复盘。
-    const retryShot = await screen.device.screenshot(signal);
-    const [retryX, retryY] = await model.locate(attemptId, retryShot, itemName, signal);
-    await screen.device.tap(retryX, retryY);
-    await wait(2_500, undefined, { signal });
-    const second = await screen.device.screenshot(signal);
-    kind = await pageKind(model, attemptId, second, signal, 'manto_page_kind_retry');
-    if (kind === 'item_detail') {
-      const [buyX, buyY] = await model.locate(attemptId, second, '立即购买', signal);
-      await screen.device.tap(buyX, buyY);
-      await wait(3_500, undefined, { signal });
-    } else if (kind !== 'checkout') {
-      throw new CollectionError('manto_visual_item_not_found');
-    }
+  // 小店页面点商品文字经常点偏，改成点目标商品行右侧的加号，成功率高且不依赖详情页。
+  const [plusX, plusY] = await model.locate(attemptId, first, itemName + ' 这一行右侧的加号', signal);
+  signal.throwIfAborted();
+  await screen.device.tap(plusX, plusY);
+  await wait(1_500, undefined, { signal });
+  await dismissPopup(screen, model, evidenceStore, attemptId, signal);
+  const afterAdd = await screen.device.screenshot(signal);
+  const itemEvidence = await evidenceStore.save(randomUUID(), 'item', afterAdd, JSON.stringify({ mode: 'manto_visual', item: itemName, step: 'added' }), 'live', new Date().toISOString());
+
+  // 加购后底部会出现“领券结算/去结算”，点击进入结算页。
+  let checkoutX = 0, checkoutY = 0, found = false;
+  for (const hint of ['领券结算', '去结算']) {
+    try {
+      [checkoutX, checkoutY] = await model.locate(attemptId, afterAdd, hint, signal);
+      found = true;
+      break;
+    } catch { /* 换下一个按钮文案 */ }
   }
+  if (!found) throw new CollectionError('manto_checkout_button_missing');
+  await screen.device.tap(checkoutX, checkoutY);
+  await wait(3_500, undefined, { signal });
+  await dismissPopup(screen, model, evidenceStore, attemptId, signal);
 
   // 复用京东已有的视觉结算读取：隐私区涂黑、保存证据、金额双读一致才发布。
   const checkout = await captureVisualCheckout(screen, model, evidenceStore, attemptId, signal, contextProof, { itemName, quantity: 1 });
-  return { checkout, storeEvidence, itemEvidence };
+
+  // 加购路径动过购物车：退回门店页，点同一行的减号撤掉本次加购，只撤一份。
+  let cleanup: 'restored' | 'untouched' = 'untouched';
+  try {
+    await screen.device.back();
+    await wait(1_200, undefined, { signal });
+    await dismissPopup(screen, model, evidenceStore, attemptId, signal);
+    const storeAgain = await screen.device.screenshot(signal);
+    const [minusX, minusY] = await model.locate(attemptId, storeAgain, itemName + ' 这一行左侧的减号', signal);
+    await screen.device.tap(minusX, minusY);
+    await wait(1_200, undefined, { signal });
+    cleanup = 'restored';
+  } catch {
+    throw new CollectionError('manto_cart_cleanup_failed', 'blocked');
+  }
+  return { checkout, storeEvidence, itemEvidence, cleanup };
+}
+
+/** 把视觉门店采集结果组装成标准 AttemptResult，供采集器在京东小程序门店路径复用。 */
+export async function collectMantoAttempt(input: {
+  screen: ReviewedScreen;
+  model: Pick<ModelGateway, 'json' | 'locate'>;
+  evidenceStore: EvidenceStore;
+  attemptId: string;
+  signal: AbortSignal;
+  task: import('../domain/contracts.js').Task;
+  item: { name: string; spec: string };
+  platform: import('../domain/contracts.js').Platform;
+  trace: import('../domain/contracts.js').AttemptResult['trace'];
+  timings: import('../domain/contracts.js').AttemptResult['timings'];
+  startedAt: string;
+  pageMap?: import('../domain/contracts.js').AttemptResult['pageMap'];
+  cost: (attemptId: string) => number | null;
+}): Promise<import('../domain/contracts.js').AttemptResult> {
+  const { randomUUID } = await import('node:crypto');
+  const visual = await readMantoCheckout(input.screen, input.model, input.evidenceStore, input.attemptId, input.signal, input.item.name, []);
+  const read = visual.checkout;
+  const { task } = input;
+  const context = task.live!;
+  const component = (value: { fen: number; raw: string } | null) => value
+    ? { amount_fen: value.fen, raw_value: value.raw, basis: 'separately_displayed' as const, included_in: 'checkout_payable' as const }
+    : { amount_fen: null, raw_value: null, basis: 'unknown' as const, included_in: null };
+  const deliveryValue = read.components.delivery;
+  const packagingValue = read.components.packaging;
+  const complete = deliveryValue !== null && packagingValue !== null;
+  const observation: import('../domain/contracts.js').Observation = {
+    observation_id: randomUUID(), source_id: task.source_id, tenant_id: task.tenant_id, slot_id: task.slot_id, attempt_id: input.attemptId, platform: input.platform,
+    store_id: task.store_id, basket_id: task.basket_id, scenario_id: task.scenario_id, price_kind: 'checkout_payable', price_scope: 'basket', currency: 'CNY',
+    amount_fen: read.total, raw_value: read.raw, components: { delivery_fee: component(deliveryValue), packaging_fee: component(packagingValue) },
+    missing_reasons: { ...(deliveryValue === null ? { delivery_fee: 'not_verified' } : {}), ...(packagingValue === null ? { packaging_fee: 'not_verified' } : {}) },
+    observed_at: read.evidence.captured_at, collected_at: new Date().toISOString(), value_origin: 'observed', quote_valid: true, detail_complete: complete,
+    basket_items: [{ product_id: context.target.id, name: input.item.name, variant: context.mapping?.candidate.supply.item.spec ?? input.item.spec, quantity: 1 }],
+    account_ref: task.account_ref, delivery_point_id: task.delivery_point_id, entry_point: task.entry_point, evidence_refs: [read.evidence],
+    contract_version: task.contract_version, collector_version: 'android-0.4.0',
+    details: {
+      components: read.components, subtotalBasis: read.basis, feesSeparate: read.feesSeparate, eta: read.eta, coupons: read.coupons,
+      couponCandidates: read.couponCandidates, missing: read.missing, reconciled: read.reconciled, contextEvidence: read.evidence,
+      storeEvidence: visual.storeEvidence, itemEvidence: visual.itemEvidence, fieldResults: read.fieldResults, supplementaryEvidence: read.supplementaryEvidence,
+    },
+  };
+  return {
+    status: complete ? 'success' : 'partial', error_code: null, availability: 'available', observation, evidence: read.evidence,
+    resolvedLive: context, quoteReadyAt: new Date().toISOString(), pageMap: input.pageMap, timings: input.timings, trace: input.trace,
+    started_at: input.startedAt, finished_at: new Date().toISOString(), cleanup: visual.cleanup,
+    cost: { model_yuan: input.cost(input.attemptId), execution_ms: Date.now() - Date.parse(input.startedAt) },
+  };
 }

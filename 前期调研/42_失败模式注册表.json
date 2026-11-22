@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-20T07:46:48.338Z",
+  "updated_at": "2026-11-22T13:20:02.556Z",
   "note": "机器可读的失败模式与修复注册表。每次失败自动匹配 error_codes；修复后必须用 scripts/knowledge-registry.ts verify 标注运行编号。状态 verified 的条目一旦再次出现同错误码，check 命令会报 regressed。",
   "entries": [
     {
@@ -389,6 +389,34 @@
       "verified_at": null,
       "verified_runs": [],
       "note": "视觉兜底已接入 android-collector（第二次 page_not_ready 且节点文字少于 5 时触发），编译构建通过；手机被占用，真机验证待做。"
+    },
+    {
+      "id": "F-34",
+      "title": "平台优惠券或活动弹窗遮挡页面",
+      "platforms": [
+        "*"
+      ],
+      "error_codes": [
+        "popup_close_unverified",
+        "item_not_verified",
+        "not_on_checkout_screen"
+      ],
+      "step": "all",
+      "symptom": "搜索、进店、加购或结算前弹出优惠券/活动浮层，页面被遮罩压暗，模型把弹窗文字当成页面内容，导致定位失败或核对失败。",
+      "root_cause": "平台会在关键动作前后弹活动浮层，原流程只在少数位置处理，没有通用检测。",
+      "fix": "新增通用弹窗守卫：截图亮度特征快速识别模态浮层，只有疑似浮层才调用视觉模型定位关闭按钮，关闭后复查；关不掉明确失败并保留证据。已接入京东门店核验后、视觉门店流程和结算读取前。",
+      "code_files": [
+        "src/adapters/popup-guard.ts",
+        "src/adapters/android-collector.ts",
+        "src/adapters/jd-manto-visual.ts",
+        "src/adapters/visual-checkout.ts"
+      ],
+      "fix_commit": null,
+      "status": "pending",
+      "first_seen": "2026-11-22",
+      "verified_at": null,
+      "verified_runs": [],
+      "note": "136 项测试通过；真实弹窗关闭已在京东门店页手工验证一次，正式批次验证待做。"
     }
   ]
 }

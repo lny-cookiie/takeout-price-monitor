@@ -7,6 +7,7 @@ import { checkoutSchema, moneyFen, type VerifiedCheckout } from './checkout-read
 import type { EvidenceStore } from '../infra/evidence.js';
 import type { ModelGateway } from '../infra/model.js';
 import type { ReviewedScreen } from './android-collector.js';
+import { dismissPopup } from './popup-guard.js';
 
 /**
  * 视觉结算读取：京东外卖结算页已改为 Taro 自绘，系统读屏读不到文字。
@@ -82,9 +83,11 @@ async function maskPrivacyTop(png: Buffer, top: number) {
 }
 
 export async function captureVisualCheckout(
-  screen: ReviewedScreen, model: Pick<ModelGateway, 'json'>, evidenceStore: EvidenceStore, attemptId: string, signal: AbortSignal,
+  screen: ReviewedScreen, model: Pick<ModelGateway, 'json'> & Partial<Pick<ModelGateway, 'locate'>>, evidenceStore: EvidenceStore, attemptId: string, signal: AbortSignal,
   contextProof: string[], expected: { itemName: string; quantity: number },
 ): Promise<VerifiedCheckout> {
+  // 结算页弹层会遮住金额行，先快速检测并关闭，再开始截图稳定性和双读。
+  if (model.locate) await dismissPopup(screen, model as Pick<ModelGateway, 'locate'>, evidenceStore, attemptId, signal);
   const ratio = screen.source.privacy?.checkoutTopRatio;
   if (!ratio || ratio <= 0) throw new CollectionError('privacy_band_unverified', 'blocked');
   const viewport = await screen.device.size();
