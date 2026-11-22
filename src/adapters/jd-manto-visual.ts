@@ -1,6 +1,7 @@
 // 京东 Manto 小程序门店页的视觉兜底：门店页节点不可读时，用截图定位单品、点开详情、点「立即购买」，
 // 再复用已有的视觉结算读取（隐私涂黑、金额双读、费用核对）。
 import { randomUUID } from 'node:crypto';
+import sharp from 'sharp';
 import { setTimeout as wait } from 'node:timers/promises';
 import type { Evidence } from '../domain/contracts.js';
 import { CollectionError } from '../domain/contracts.js';
@@ -49,51 +50,64 @@ export async function readMantoCheckout(
   itemName: string,
   contextProof: string[] = [],
 ): Promise<{ checkout: VerifiedCheckout; storeEvidence: Evidence; itemEvidence: Evidence; cleanup: 'restored' | 'untouched' }> {
+  const thumb = async (png: Buffer) => sharp(png).resize(48, 48, { fit: 'fill' }).greyscale().raw().toBuffer();
+  const stableShot = async () => {
+    let png = await screen.device.screenshot(signal);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await wait(700, undefined, { signal });
+      const next = await screen.device.screenshot(signal);
+      const [a, b] = [await thumb(png), await thumb(next)];
+      let diff = 0;
+      for (let i = 0; i < a.length; i++) diff += Math.abs(a[i]! - b[i]!);
+      if (diff / a.length < 1.5) return next;
+      png = next;
+    }
+    return png;
+  };
   await dismissPopup(screen, model, evidenceStore, attemptId, signal);
-  const first = await screen.device.screenshot(signal);
+  const first = await stableShot();
   const storeEvidence = await evidenceStore.save(randomUUID(), 'store', first, JSON.stringify({ mode: 'manto_visual', item: itemName }), 'live', new Date().toISOString());
 
-  // 小店页面点商品文字经常点偏，改成点目标商品行右侧的加号，成功率高且不依赖详情页。
-  const [plusX, plusY] = await model.locate(attemptId, first, itemName + ' 这一行右侧的加号', signal);
-  signal.throwIfAborted();
-  await screen.device.tap(plusX, plusY);
-  await wait(1_500, undefined, { signal });
-  await dismissPopup(screen, model, evidenceStore, attemptId, signal);
-  const afterAdd = await screen.device.screenshot(signal);
-  const itemEvidence = await evidenceStore.save(randomUUID(), 'item', afterAdd, JSON.stringify({ mode: 'manto_visual', item: itemName, step: 'added' }), 'live', new Date().toISOString());
-
-  // 加购后底部会出现“领券结算/去结算”，点击进入结算页。
-  let checkoutX = 0, checkoutY = 0, found = false;
-  for (const hint of ['领券结算', '去结算']) {
-    try {
-      [checkoutX, checkoutY] = await model.locate(attemptId, afterAdd, hint, signal);
-      found = true;
-      break;
-    } catch { /* 换下一个按钮文案 */ }
+  // 点商品标题打开详情页，再点固定的“立即购买”位置进结算；立即购买不经过购物车，清理状态可以保持 untouched。
+  let detailReached = false;
+  let itemEvidence: Evidence | null = null;
+  for (let attempt = 0; attempt < 2 && !detailReached; attempt++) {
+    const shot = attempt === 0 ? first : await stableShot();
+    const [itemX, itemY] = await model.locate(attemptId, shot, itemName, signal);
+    signal.throwIfAborted();
+    await screen.device.tap(itemX, itemY);
+    await wait(2_500, undefined, { signal });
+    await dismissPopup(screen, model, evidenceStore, attemptId, signal);
+    const detail = await stableShot();
+    const kind = await pageKind(model, attemptId, detail, signal, 'manto_page_kind');
+    if (kind === 'item_detail' || kind === 'checkout') {
+      itemEvidence = await evidenceStore.save(randomUUID(), 'item', detail, JSON.stringify({ mode: 'manto_visual', item: itemName }), 'live', new Date().toISOString());
+      detailReached = true;
+      if (kind === 'checkout') break;
+    }
   }
-  if (!found) throw new CollectionError('manto_checkout_button_missing');
-  await screen.device.tap(checkoutX, checkoutY);
+  if (!detailReached || !itemEvidence) throw new CollectionError('manto_item_detail_not_reached');
+
+  // 商品详情页底部“立即购买”位置固定，直接点固定比例，避免模型二次定位漂移。
+  const viewport = await screen.device.size();
+  await screen.device.tap(viewport.width * 0.804, viewport.height * 0.952);
   await wait(3_500, undefined, { signal });
   await dismissPopup(screen, model, evidenceStore, attemptId, signal);
 
-  // 复用京东已有的视觉结算读取：隐私区涂黑、保存证据、金额双读一致才发布。
-  const checkout = await captureVisualCheckout(screen, model, evidenceStore, attemptId, signal, contextProof, { itemName, quantity: 1 });
-
-  // 加购路径动过购物车：退回门店页，点同一行的减号撤掉本次加购，只撤一份。
-  let cleanup: 'restored' | 'untouched' = 'untouched';
-  try {
-    await screen.device.back();
-    await wait(1_200, undefined, { signal });
-    await dismissPopup(screen, model, evidenceStore, attemptId, signal);
-    const storeAgain = await screen.device.screenshot(signal);
-    const [minusX, minusY] = await model.locate(attemptId, storeAgain, itemName + ' 这一行左侧的减号', signal);
-    await screen.device.tap(minusX, minusY);
-    await wait(1_200, undefined, { signal });
-    cleanup = 'restored';
-  } catch {
-    throw new CollectionError('manto_cart_cleanup_failed', 'blocked');
+  let checkout: VerifiedCheckout | null = null;
+  for (let attempt = 0; attempt < 2 && !checkout; attempt++) {
+    try {
+      checkout = await captureVisualCheckout(screen, model, evidenceStore, attemptId, signal, contextProof, { itemName, quantity: 1 });
+    } catch (error) {
+      if (!(error instanceof CollectionError && error.code === 'not_on_checkout_screen') || attempt === 1) throw error;
+      // 页面动画或弹窗吃掉第一次点击时，再点一次固定位置；立即购买不会改购物车，重试不会叠加商品。
+      await screen.device.tap(viewport.width * 0.804, viewport.height * 0.952);
+      await wait(2_500, undefined, { signal });
+      await dismissPopup(screen, model, evidenceStore, attemptId, signal);
+    }
   }
-  return { checkout, storeEvidence, itemEvidence, cleanup };
+  if (!checkout) throw new CollectionError('not_on_checkout_screen', 'blocked');
+  return { checkout, storeEvidence, itemEvidence, cleanup: 'untouched' };
 }
 
 /** 把视觉门店采集结果组装成标准 AttemptResult，供采集器在京东小程序门店路径复用。 */
