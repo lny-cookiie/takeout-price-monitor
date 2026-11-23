@@ -294,6 +294,7 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
       if(typeof input.discount==='number')patch.discount_fen=Math.round(input.discount*100);
       if(typeof input.storeName==='string')patch.store_name=input.storeName;
       if(typeof input.itemName==='string')patch.item_name=input.itemName;
+      if(typeof input.reviewStatus==='string')patch.review_status=input.reviewStatus;
       reply(200,store.updateScreenshotQuote(screenshotQuotePatch[1]!,patch));return true;
     }
     const screenshotQuoteDelete=/^\/api\/bd\/screenshot-quotes\/([a-f0-9-]{36})$/.exec(path);
