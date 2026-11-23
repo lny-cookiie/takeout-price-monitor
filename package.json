@@ -19,7 +19,8 @@
     "test:ue:browser": "npm run build:ue && tsx scripts/verify-ue.ts",
     "demo": "tsx scripts/showcase.ts",
     "browser:install": "playwright install chromium",
-    "acceptance": "tsx scripts/run-acceptance.ts"
+    "acceptance": "tsx scripts/run-acceptance.ts",
+    "readme:shots": "tsx scripts/capture-readme-shots.ts"
   },
   "dependencies": {
     "@midscene/android": "1.17.6",

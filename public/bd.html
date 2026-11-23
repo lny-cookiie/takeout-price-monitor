@@ -1,12 +1,19 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><meta name="description" content="BD 报价采集：输入城市、品牌、门店与爆品，勾选平台后开始采集并实时查看进度。"><title>BD 报价采集 · 三平台比价</title><link rel="stylesheet" href="/ue.css"><link rel="stylesheet" href="/bd.css"></head><body><a class="skip" href="#main">跳转到内容</a>
-<header class="topbar"><div class="brand"><span class="brand-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>BD 报价采集</span></div>
-<nav class="nav" aria-label="主导航"><button class="active" type="button">采集录入</button><a class="nav-item" href="/ue">UE 工作台</a></nav>
-<div class="top-right"><span class="demo-tag">本地真机采集 · 未发布</span><span class="avatar" aria-hidden="true">BD</span></div></header>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><meta name="description" content="三平台比价工具：自动采集、截图识别、数据台账与 CSV 导出。"><title>三平台比价工具</title><link rel="stylesheet" href="/ue.css"><link rel="stylesheet" href="/bd.css"></head><body><a class="skip" href="#main">跳转到内容</a>
+<header class="topbar"><div class="brand"><span class="brand-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>三平台比价工具</span></div>
+<nav class="nav" aria-label="主导航"><button class="active" type="button">工作台</button><a class="nav-item" href="/ue">UE 工作台</a></nav>
+<div class="top-right"><span class="demo-tag">本地采集 · 未发布</span><span class="avatar" aria-hidden="true">BD</span></div></header>
 <main id="main" class="workspace">
-  <div class="heading"><div><div class="eyebrow">BD 一线工具</div><h1>三平台比价采集</h1>
-    <p class="subtitle">填写负责的城市、品牌与爆品，选择要比价的平台，开始采集后会实时显示每个平台的进度，失败可直接重跑。</p></div>
-    <div class="heading-actions"><a href="/ue"><button type="button">打开 UE 工作台</button></a></div></div>
+  <div class="bd-tabs" role="tablist" aria-label="功能入口">
+    <button type="button" class="bd-tab active" data-tab="auto" role="tab" aria-selected="true">自动采集</button>
+    <button type="button" class="bd-tab" data-tab="screenshots" role="tab" aria-selected="false">截图识别</button>
+    <button type="button" class="bd-tab" data-tab="ledger" role="tab" aria-selected="false">数据台账</button>
+  </div>
+
+  <section id="tab-auto" class="tab-panel" role="tabpanel">
+  <div class="heading"><div><div class="eyebrow">自动采集 · 需要真机</div><h1>三平台比价采集</h1>
+    <p class="subtitle">填写负责的城市、品牌与爆品，选择要比价的平台，开始采集后会实时显示每个平台的进度，失败可直接重跑。目标需要先在商品目录登记。</p></div>
+    <div class="heading-actions"><a href="#ledger" class="link-button" data-tab-link="ledger">查看数据台账</a></div></div>
 
   <div class="bd-layout">
     <section class="panel bd-form-panel" aria-labelledby="form-title">
@@ -47,6 +54,93 @@
       <div class="panel-body" id="result-body"></div>
     </section>
   </div>
+  </section>
+
+  <section id="tab-screenshots" class="tab-panel" role="tabpanel" hidden>
+    <div class="heading"><div><div class="eyebrow">截图识别 · 不需要真机</div><h1>上传结算页截图</h1>
+      <p class="subtitle">按美团、淘宝、京东顺序上传结算页截图，工具自动识别门店、商品、规格、数量和金额费用。识别结果先落库，确认前可以修改。</p></div></div>
+    <div class="shot-layout">
+      <section class="panel">
+        <div class="panel-head"><div class="panel-title"><h2>1. 新建比较批次</h2><span class="panel-note">可留空，识别后仍会入库</span></div></div>
+        <div class="panel-body">
+          <form id="shot-batch-form" class="fields shot-fields" autocomplete="off">
+            <label class="field"><span>城市</span><input name="city" placeholder="如 天津市"></label>
+            <label class="field"><span>品牌</span><input name="brand" placeholder="如 麦当劳"></label>
+            <label class="field"><span>门店（可选）</span><input name="store" placeholder="如 鞍山西道店"></label>
+            <label class="field"><span>商品（可选）</span><input name="item" placeholder="如 板烧鸡腿堡"></label>
+          </form>
+          <div class="bd-actions"><button class="primary" type="button" id="create-shot-batch">创建批次</button><span class="muted smalltext" id="shot-batch-state">还没有批次</span></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div class="panel-title"><h2>2. 上传三平台截图</h2><span class="panel-note">支持 PNG / JPEG，单张不超过 8MB</span></div></div>
+        <div class="panel-body"><div class="upload-grid" id="shot-upload-grid"></div>
+          <p class="muted smalltext">上传前请确认截图包含「应付总额」；工具会自动遮住顶部地址区域，不保存原始图。</p>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div class="panel-title"><h2>3. 识别结果与三家对比</h2><span class="panel-note" id="shot-result-state">等待上传</span></div>
+          <div class="actions"><button type="button" class="small" id="refresh-shot-result">刷新结果</button></div></div>
+        <div class="panel-body" id="shot-result-body"><p class="muted">还没有识别结果。</p></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div class="panel-title"><h2>最近截图批次</h2><span class="panel-note">点击批次继续查看</span></div></div>
+        <div class="panel-body" id="shot-batch-list"><p class="muted">还没有批次。</p></div>
+      </section>
+    </div>
+  </section>
+
+  <section id="tab-ledger" class="tab-panel" role="tabpanel" hidden>
+    <div class="heading"><div><div class="eyebrow">数据台账 · 自动与截图统一查看</div><h1>报价记录与数据库状态</h1>
+      <p class="subtitle">按时间、来源、平台、门店和商品筛选，查看每条报价的证据和完整性，并下载 CSV。截图记录不参与自动采集的验收统计。</p></div>
+      <div class="heading-actions"><button type="button" class="primary" id="ledger-refresh">刷新</button></div></div>
+    <div class="ledger-stats" id="ledger-stats"></div>
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title"><h2>筛选</h2><span class="panel-note">条件会同时作用于页面和 CSV</span></div>
+        <div class="actions"><a class="link-button" id="ledger-csv" href="/api/bd/ledger.csv" download>下载 CSV</a></div></div>
+      <div class="panel-body"><form id="ledger-filter" class="fields ledger-fields">
+        <label class="field"><span>开始日期</span><input type="date" name="from"></label>
+        <label class="field"><span>结束日期</span><input type="date" name="to"></label>
+        <label class="field"><span>来源</span><select name="source"><option value="all">全部</option><option value="auto">自动采集</option><option value="screenshot">截图识别</option></select></label>
+        <label class="field"><span>平台</span><select name="platform"><option value="">全部</option><option value="jd">京东</option><option value="meituan">美团</option><option value="taobao_instant">淘宝闪购</option></select></label>
+        <label class="field"><span>门店</span><input name="store" placeholder="输入门店关键字"></label>
+        <label class="field"><span>商品</span><input name="item" placeholder="输入商品关键字"></label>
+      </form><div class="bd-actions"><button type="button" class="primary" id="apply-ledger">应用筛选</button><span class="muted smalltext" id="ledger-state">等待加载</span></div></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title"><h2>报价记录</h2><span class="panel-note" id="ledger-count">0 条</span></div></div>
+      <div class="panel-body table-wrap"><table class="ledger-table" id="ledger-table"><thead><tr><th>时间</th><th>来源</th><th>平台</th><th>门店</th><th>商品</th><th>应付</th><th>配送/打包</th><th>优惠</th><th>状态</th><th>证据</th></tr></thead><tbody></tbody></table></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><div class="panel-title"><h2>数据库状态</h2><span class="panel-note">只读统计</span></div></div>
+      <div class="panel-body" id="db-status"><p class="muted">加载中…</p></div>
+    </section>
+  </section>
 </main>
 <div id="bd-toast" role="status" aria-live="polite"></div>
-<script type="module" src="/bd.js"></script></body></html>
+<script type="module">
+  const tabs = [...document.querySelectorAll('[data-tab]')];
+  const panels = { auto: document.getElementById('tab-auto'), screenshots: document.getElementById('tab-screenshots'), ledger: document.getElementById('tab-ledger') };
+  function switchTab(name) {
+    if (!panels[name]) name = 'auto';
+    for (const tab of tabs) {
+      if (!tab.dataset.tab) continue;
+      const active = tab.dataset.tab === name;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+    }
+    for (const [key, panel] of Object.entries(panels)) panel.hidden = key !== name;
+    location.hash = name;
+    document.dispatchEvent(new CustomEvent('bd:tab', { detail: name }));
+  }
+  document.addEventListener('click', (event) => {
+    const trigger = event.target.closest('[data-tab]');
+    if (trigger) { event.preventDefault(); switchTab(trigger.dataset.tab); }
+  });
+  window.addEventListener('hashchange', () => switchTab(location.hash.slice(1)));
+  switchTab(location.hash.slice(1) || 'auto');
+</script>
+<script type="module" src="/bd.js"></script>
+<script type="module" src="/bd-screenshot.js"></script>
+<script type="module" src="/bd-ledger.js"></script>
+</body></html>

@@ -41,6 +41,12 @@ export class CompetitionStore {
       INSERT OR IGNORE INTO migrations VALUES(5);
       CREATE TABLE IF NOT EXISTS page_map_versions(id TEXT PRIMARY KEY,at TEXT NOT NULL,payload TEXT NOT NULL CHECK(json_valid(payload)));
       INSERT OR IGNORE INTO migrations VALUES(6);
+
+      CREATE TABLE IF NOT EXISTS screenshot_batches(id TEXT PRIMARY KEY,created_at TEXT NOT NULL,city TEXT NOT NULL DEFAULT '',brand TEXT NOT NULL DEFAULT '',store TEXT NOT NULL DEFAULT '',item TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'open');
+      CREATE TABLE IF NOT EXISTS screenshot_quotes(id TEXT PRIMARY KEY,batch_id TEXT NOT NULL,platform TEXT NOT NULL,created_at TEXT NOT NULL,source_filename TEXT NOT NULL DEFAULT '',evidence_id TEXT NOT NULL,image_sha256 TEXT NOT NULL,store_name TEXT,city TEXT,brand TEXT,item_name TEXT,spec TEXT,quantity INTEGER,payable_fen INTEGER,subtotal_fen INTEGER,packaging_fen INTEGER,delivery_fen INTEGER,discount_fen INTEGER,coupons_json TEXT NOT NULL DEFAULT '[]',raw_json TEXT NOT NULL DEFAULT '{}',confidence TEXT NOT NULL DEFAULT 'low',review_status TEXT NOT NULL DEFAULT 'auto',issues_json TEXT NOT NULL DEFAULT '[]',error TEXT,UNIQUE(batch_id,platform));
+      CREATE INDEX IF NOT EXISTS screenshot_quote_batch ON screenshot_quotes(batch_id);
+      CREATE INDEX IF NOT EXISTS screenshot_quote_time ON screenshot_quotes(created_at DESC);
+      INSERT OR IGNORE INTO migrations VALUES(7);
       COMMIT;
     `);
     for(const platform of PLATFORMS){const source=this.sources.get(platform);if(source){const map=publicPageMap(platform,source);this.db.prepare('INSERT OR IGNORE INTO page_map_versions VALUES(?,?,?)').run(map.mapVersion,new Date().toISOString(),JSON.stringify(map));}}
@@ -498,6 +504,85 @@ export class CompetitionStore {
     return {entry,rows:comparisonRows(slots),run:latest?this.runDetails(latest):null,
       history:runs.map(r=>this.run(String(r.run_id))).filter(Boolean)};
   }
+
+  createScreenshotBatch(input:{city?:string;brand?:string;store?:string;item?:string}) {
+    const id=randomUUID(), at=new Date().toISOString();
+    this.db.prepare('INSERT INTO screenshot_batches(id,created_at,city,brand,store,item) VALUES(?,?,?,?,?,?)')
+      .run(id,at,input.city??'',input.brand??'',input.store??'',input.item??'');
+    return this.screenshotBatch(id)!;
+  }
+  screenshotBatch(id:string) {
+    const row=this.db.prepare('SELECT * FROM screenshot_batches WHERE id=?').get(id);
+    if(!row)return null;
+    const quotes=this.db.prepare('SELECT * FROM screenshot_quotes WHERE batch_id=? ORDER BY created_at').all(id).map(r=>this.screenshotQuoteRow(r));
+    return {batch:{id:String(row.id),createdAt:String(row.created_at),city:String(row.city),brand:String(row.brand),store:String(row.store),item:String(row.item),status:String(row.status)},quotes};
+  }
+  screenshotBatches(limit=30) {
+    return this.db.prepare('SELECT * FROM screenshot_batches ORDER BY created_at DESC LIMIT ?').all(limit).map(r=>({
+      id:String(r.id),createdAt:String(r.created_at),city:String(r.city),brand:String(r.brand),store:String(r.store),item:String(r.item),status:String(r.status),
+      count:Number(this.db.prepare('SELECT COUNT(*) n FROM screenshot_quotes WHERE batch_id=?').get(String(r.id))?.n??0),
+    }));
+  }
+  saveScreenshotQuote(record: Record<string,unknown>) {
+    const id=String(record.id),batchId=String(record.batchId),platform=String(record.platform),createdAt=String(record.createdAt);
+    const filename=String(record.sourceFilename??''),evidenceId=String(record.evidenceId),sha=String(record.imageSha256);
+    const num=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)?v:null;
+    const text=(v:unknown)=>typeof v==='string'?v:null;
+    this.db.prepare('INSERT INTO screenshot_quotes(id,batch_id,platform,created_at,source_filename,evidence_id,image_sha256,store_name,city,brand,item_name,spec,quantity,payable_fen,subtotal_fen,packaging_fen,delivery_fen,discount_fen,coupons_json,raw_json,confidence,review_status,issues_json,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id,batchId,platform,createdAt,filename,evidenceId,sha,
+        text(record.storeName),text(record.city),text(record.brand),text(record.itemName),text(record.spec),num(record.quantity),
+        num(record.payableFen),num(record.subtotalFen),num(record.packagingFen),num(record.deliveryFen),num(record.discountFen),
+        JSON.stringify(record.coupons??[]),JSON.stringify(record.raw??{}),String(record.confidence??'low'),String(record.reviewStatus??'auto'),
+        JSON.stringify(record.issues??[]),text(record.error));
+    return this.screenshotBatch(batchId);
+  }
+  updateScreenshotQuote(id:string, patch:Record<string,unknown>) {
+    const existing=this.db.prepare('SELECT * FROM screenshot_quotes WHERE id=?').get(id);
+    if(!existing)return null;
+    const allowed=['store_name','city','brand','item_name','spec','quantity','payable_fen','subtotal_fen','packaging_fen','delivery_fen','discount_fen','review_status'];
+    for(const key of allowed){if(Object.prototype.hasOwnProperty.call(patch,key))this.db.prepare('UPDATE screenshot_quotes SET '+key+'=? WHERE id=?').run(patch[key] as never,id);}
+    return this.screenshotBatch(String(existing.batch_id));
+  }
+  deleteScreenshotQuote(id:string) {
+    const row=this.db.prepare('SELECT batch_id FROM screenshot_quotes WHERE id=?').get(id);
+    if(!row)return null;
+    this.db.prepare('DELETE FROM screenshot_quotes WHERE id=?').run(id);
+    return this.screenshotBatch(String(row.batch_id));
+  }
+  screenshotLedger(limit=500) {
+    return this.db.prepare('SELECT * FROM screenshot_quotes ORDER BY created_at DESC LIMIT ?').all(limit).map(r=>this.screenshotQuoteRow(r));
+  }
+  autoLedger(limit=500) {
+    const rows=this.db.prepare(`SELECT o.payload observation_json,o.observed_at,s.task_json,o.platform,o.amount_fen FROM observations o JOIN slots s ON s.id=o.slot_id ORDER BY o.observed_at DESC LIMIT ?`).all(limit);
+    return rows.map(r=>{
+      let observation:any={},task:any={};try{observation=read<any>(r.observation_json);task=read<any>(r.task_json);}catch{}
+      const supply=task.live?.target?.supply??{},item=supply.item??{},store=supply.store??{};
+      return {id:String(observation.observation_id??''),source:'auto',batchId:String(task.run_id??''),platform:String(r.platform),createdAt:String(r.observed_at),
+        city:String(store.city??''),brand:String(store.brand??''),storeName:String(store.name??''),itemName:String(item.name??''),spec:String(item.spec??''),
+        quantity:1,payableFen:Number(r.amount_fen),subtotalFen:null,packagingFen:observation.components?.packaging_fee?.amount_fen??null,
+        deliveryFen:observation.components?.delivery_fee?.amount_fen??null,discountFen:null,coupons:[],reviewStatus:'auto',
+        confidence:observation.detail_complete?'high':'medium',issues:Object.keys(observation.missing_reasons??{}),evidenceId:String(observation.evidence_refs?.[0]?.id??''),error:null};
+    });
+  }
+  screenshotQuoteRow(r:Row) {
+    const parse=(v:unknown,fallback:unknown)=>{try{return JSON.parse(String(v));}catch{return fallback;}};
+    return {id:String(r.id),source:'screenshot',batchId:String(r.batch_id),platform:String(r.platform),createdAt:String(r.created_at),sourceFilename:String(r.source_filename),
+      evidenceId:String(r.evidence_id),imageSha256:String(r.image_sha256),storeName:r.store_name??null,city:r.city??null,brand:r.brand??null,itemName:r.item_name??null,
+      spec:r.spec??null,quantity:r.quantity??null,payableFen:r.payable_fen??null,subtotalFen:r.subtotal_fen??null,packagingFen:r.packaging_fen??null,
+      deliveryFen:r.delivery_fen??null,discountFen:r.discount_fen??null,coupons:parse(r.coupons_json,[]),raw:parse(r.raw_json,{}),
+      confidence:String(r.confidence),reviewStatus:String(r.review_status),issues:parse(r.issues_json,[]),error:r.error??null};
+  }
+  dbStatus(evidenceRoot:string) {
+    const count=(table:string)=>Number(this.db.prepare('SELECT COUNT(*) n FROM '+table).get()?.n??0);
+    const size=Number(this.db.prepare('PRAGMA page_count').get()?.page_count??0)*Number(this.db.prepare('PRAGMA page_size').get()?.page_size??0);
+    let evidenceCount=0,evidenceBytes=0;
+    try{const fs=require('node:fs');for(const f of fs.readdirSync(evidenceRoot)){const st=fs.statSync(evidenceRoot+'/'+f);if(f.endsWith('.png')){evidenceCount++;evidenceBytes+=st.size;}}}catch{}
+    return {databaseBytes:size,tables:{runs:count('runs'),slots:count('slots'),observations:count('observations'),quoteSnapshots:count('quote_snapshots'),catalog:count('monitor_catalog'),screenshotBatches:count('screenshot_batches'),screenshotQuotes:count('screenshot_quotes')},
+      latestRuns:this.db.prepare('SELECT id,label,created_at FROM runs ORDER BY created_at DESC LIMIT 5').all().map(r=>({id:String(r.id),label:String(r.label),createdAt:String(r.created_at)})),
+      latestQuote:this.db.prepare('SELECT MAX(observed_at) at FROM observations').get()?.at??null,
+      paused:this.db.prepare('SELECT key,code FROM paused_resources').all(),evidence:{files:evidenceCount,bytes:evidenceBytes}};
+  }
+
   recordModel(row: ModelAudit) {
     this.db.prepare('INSERT INTO market_audit(scope,at,payload) VALUES(?,?,?)').run(row.scope,new Date().toISOString(),JSON.stringify(row));
   }

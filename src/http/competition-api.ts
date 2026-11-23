@@ -17,6 +17,8 @@ import { deviceInventory, installedAppVersion } from '../adapters/android-transp
 import type { ModelGateway } from '../infra/model.js';
 import { jdRunInputSchema, jdSavedRunInputSchema, jdStoreInputSchema, type JdRunInput, type JdSavedRunInput, type JdStoreInput } from '../domain/jd-shelf.js';
 import { checkCatalogImport, catalogTemplate } from '../domain/monitor-catalog.js';
+import { recognizeScreenshot } from '../adapters/screenshot-recognition.js';
+import { toCsv, type ScreenshotPlatform } from '../domain/screenshot.js';
 import {PAGE_ONTOLOGY_VERSION,businessEntities,businessRelations,quoteFieldDefinitions,supplyFieldDefinitions,fieldGovernance,publicPageMap} from '../domain/page-ontology.js';
 
 const importCheck = validator<{records:OrderImport[]}>(object({records:array(orderSchema,500,1)}),'京东订单');
@@ -244,6 +246,79 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
       try { reply(200,await model.test()); }
       finally { testing = false; }
       return true;
+    }
+
+    // ---- 截图识别入口：上传结算页截图，识别后落库，与自动采集分开存储和统计 ----
+    if (method==='POST' && path==='/api/bd/screenshot-batches') {
+      const input=validator<{city?:string;brand?:string;store?:string;item?:string}>(object({city:string(40,0),brand:string(60,0),store:string(120,0),item:string(80,0)},[]),'截图批次')(await body(20_000));
+      reply(201,store.createScreenshotBatch(input));return true;
+    }
+    const screenshotUpload=/^\/api\/bd\/screenshot-batches\/([a-f0-9-]{36})\/uploads$/.exec(path);
+    if (method==='POST' && screenshotUpload) {
+      const batch=store.screenshotBatch(screenshotUpload[1]!);
+      if(!batch){reply(404,{error:'batch_not_found'});return true;}
+      const input=validator<{platform:string;filename:string;imageBase64:string}>(object({platform:{type:'string',enum:[...PLATFORMS]},filename:string(200,0),imageBase64:string(12_000_000,1)},['platform','imageBase64']),'截图上传')(await body(12_000_000));
+      const platform=input.platform as ScreenshotPlatform;
+      if(batch.quotes.some(q=>q.platform===platform)){reply(409,{error:'platform_already_uploaded',message:'该平台本批次已上传，可先删除原记录再上传'});return true;}
+      const base64=input.imageBase64.replace(/^data:image\/[a-z+]+;base64,/i,'');
+      const image=Buffer.from(base64,'base64');
+      if(!image.length||image.length>8_000_000){reply(413,{error:'image_too_large'});return true;}
+      try {
+        const recognized=await recognizeScreenshot({platform,image,filename:input.filename||'upload.png',model,evidenceStore:evidence,signal:AbortSignal.timeout(120_000),expected:{city:batch.batch.city,brand:batch.batch.brand,store:batch.batch.store,item:batch.batch.item}});
+        const record={id:crypto.randomUUID(),batchId:batch.batch.id,platform,createdAt:new Date().toISOString(),sourceFilename:input.filename||'upload.png',
+          evidenceId:recognized.evidence.id,imageSha256:recognized.imageSha256,...recognized.fields,raw:recognized.raw,reconciled:recognized.reconciled,
+          confidence:recognized.confidence,reviewStatus:'auto',issues:recognized.issues,error:null};
+        reply(201,store.saveScreenshotQuote(record as unknown as Record<string,unknown>));return true;
+      } catch (error) {
+        const code=error instanceof Error ? (error as {code?:string}).code ?? error.message : 'screenshot_recognize_failed';
+        reply(422,{error:code,message:code==='not_checkout_screenshot'?'这张图不像结算页，请上传包含应付总额的结算截图':'截图识别失败，请重试或人工填写'});return true;
+      }
+    }
+    const screenshotBatchGet=/^\/api\/bd\/screenshot-batches\/([a-f0-9-]{36})$/.exec(path);
+    if (method==='GET' && screenshotBatchGet) {
+      const batch=store.screenshotBatch(screenshotBatchGet[1]!);
+      if(!batch){reply(404,{error:'batch_not_found'});return true;}
+      reply(200,batch);return true;
+    }
+    if (method==='GET' && path==='/api/bd/screenshot-batches') {
+      reply(200,{batches:store.screenshotBatches(Number(url.searchParams.get('limit')??30))});return true;
+    }
+    const screenshotQuotePatch=/^\/api\/bd\/screenshot-quotes\/([a-f0-9-]{36})$/.exec(path);
+    if (method==='PATCH' && screenshotQuotePatch) {
+      const input=validator<Record<string,unknown>>(object({storeName:string(200,0),city:string(80,0),brand:string(80,0),itemName:string(160,0),spec:string(80,0),quantity:number(1,99),payable:number(0,1_000_000),subtotal:number(0,1_000_000),packaging:number(0,1_000_000),delivery:number(0,1_000_000),discount:number(0,1_000_000),reviewStatus:enumOf('edited','confirmed','rejected')},[]),'识别修正')(await body(50_000));
+      const patch:Record<string,unknown>={...input};
+      if(typeof input.payable==='number')patch.payable_fen=Math.round(input.payable*100);
+      if(typeof input.subtotal==='number')patch.subtotal_fen=Math.round(input.subtotal*100);
+      if(typeof input.packaging==='number')patch.packaging_fen=Math.round(input.packaging*100);
+      if(typeof input.delivery==='number')patch.delivery_fen=Math.round(input.delivery*100);
+      if(typeof input.discount==='number')patch.discount_fen=Math.round(input.discount*100);
+      if(typeof input.storeName==='string')patch.store_name=input.storeName;
+      if(typeof input.itemName==='string')patch.item_name=input.itemName;
+      reply(200,store.updateScreenshotQuote(screenshotQuotePatch[1]!,patch));return true;
+    }
+    const screenshotQuoteDelete=/^\/api\/bd\/screenshot-quotes\/([a-f0-9-]{36})$/.exec(path);
+    if (method==='DELETE' && screenshotQuoteDelete) {
+      const batch=store.deleteScreenshotQuote(screenshotQuoteDelete[1]!);
+      if(!batch){reply(404,{error:'quote_not_found'});return true;}
+      reply(200,batch);return true;
+    }
+    if (method==='GET' && path==='/api/bd/db-status') {
+      reply(200,store.dbStatus(evidence.root));return true;
+    }
+    if (method==='GET' && (path==='/api/bd/ledger' || path==='/api/bd/ledger.csv')) {
+      const q=url.searchParams, source=q.get('source')??'all', platform=q.get('platform')??'', storeFilter=q.get('store')??'', itemFilter=q.get('item')??'', from=q.get('from')??'', to=q.get('to')??'';
+      const auto=source==='screenshot'?[]:store.autoLedger(500);
+      const shots=source==='auto'?[]:store.screenshotLedger(500);
+      let rows:any[]=[...auto,...shots] as any[];
+      rows=rows.filter(r=>(!from||r.createdAt.slice(0,10)>=from)&&(!to||r.createdAt.slice(0,10)<=to)&&(!platform||r.platform===platform)&&
+        (!storeFilter||String(r.storeName??'').includes(storeFilter))&&(!itemFilter||String(r.itemName??'').includes(itemFilter)));
+      rows.sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+      const stats={auto:rows.filter(r=>r.source==='auto').length,screenshot:rows.filter(r=>r.source==='screenshot').length,
+        complete:rows.filter(r=>r.payableFen!==null&&r.storeName&&r.itemName).length,evidence:rows.filter(r=>r.evidenceId).length};
+      const columns=[{key:'createdAt',label:'时间'},{key:'source',label:'来源'},{key:'platform',label:'平台'},{key:'city',label:'城市'},{key:'brand',label:'品牌'},{key:'storeName',label:'门店'},{key:'itemName',label:'商品'},{key:'spec',label:'规格'},{key:'quantity',label:'数量'},{key:'payable',label:'应付'},{key:'subtotal',label:'商品小计'},{key:'packaging',label:'打包费'},{key:'delivery',label:'配送费'},{key:'discount',label:'优惠'},{key:'reviewStatus',label:'状态'},{key:'evidenceId',label:'证据'}];
+      const csvRows=rows.map(r=>({...r,payable:r.payableFen==null?'':(r.payableFen/100).toFixed(2),subtotal:r.subtotalFen==null?'':(r.subtotalFen/100).toFixed(2),packaging:r.packagingFen==null?'':(r.packagingFen/100).toFixed(2),delivery:r.deliveryFen==null?'':(r.deliveryFen/100).toFixed(2),discount:r.discountFen==null?'':(r.discountFen/100).toFixed(2)}));
+      if(path.endsWith('.csv')){reply(200,toCsv(columns,csvRows),'text/csv; charset=utf-8');return true;}
+      reply(200,{rows,stats,columns});return true;
     }
     return false;
   };
