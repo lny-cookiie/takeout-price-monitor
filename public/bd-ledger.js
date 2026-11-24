@@ -1,5 +1,6 @@
 // 数据台账：合并自动采集与截图识别记录，支持筛选、证据查看、CSV 下载和数据库状态。
-const ledgerState = { rows: [], stats: {} };
+const ledgerState = { rows: [], stats: {}, page: 0, pageSize: 50 };
+const TABLE_LABELS = { runs:'采集运行', slots:'平台任务', observations:'有效报价', quoteSnapshots:'历史报价', catalog:'商品目录', screenshotBatches:'截图批次', screenshotQuotes:'截图识别' };
 const $l = (id) => document.getElementById(id);
 const PLATFORM_LABEL = { jd: '京东', meituan: '美团', taobao_instant: '淘宝闪购' };
 const SOURCE_LABEL = { auto: '自动采集', screenshot: '截图识别' };
@@ -29,6 +30,7 @@ async function loadLedger() {
     if (!res.ok) throw new Error(data.message || data.error || '读取失败');
     ledgerState.rows = data.rows || [];
     ledgerState.stats = data.stats || {};
+    ledgerState.page = 0;
     renderLedgerStats();
     renderLedgerRows();
     $l('ledger-state').textContent = '已更新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -52,9 +54,14 @@ function renderLedgerStats() {
 
 function renderLedgerRows() {
   const body = $l('ledger-table').querySelector('tbody');
-  $l('ledger-count').textContent = ledgerState.rows.length + ' 条';
-  if (!ledgerState.rows.length) { body.innerHTML = '<tr><td colspan="10" class="muted">当前筛选没有记录。</td></tr>'; return; }
-  body.innerHTML = ledgerState.rows.map((row) => {
+  const total = ledgerState.rows.length;
+  const maxPage = Math.max(1, Math.ceil(total / ledgerState.pageSize));
+  if (ledgerState.page >= maxPage) ledgerState.page = maxPage - 1;
+  const start = ledgerState.page * ledgerState.pageSize;
+  const pageRows = ledgerState.rows.slice(start, start + ledgerState.pageSize);
+  $l('ledger-count').textContent = total + ' 条';
+  if (!total) { body.innerHTML = '<tr><td colspan="10" class="muted">当前筛选没有记录。</td></tr>'; }
+  else body.innerHTML = pageRows.map((row) => {
     const fees = [row.packagingFen == null ? null : '打包 ' + moneyL(row.packagingFen), row.deliveryFen == null ? null : '配送 ' + moneyL(row.deliveryFen)].filter(Boolean).join(' · ') || '—';
     const review = row.reviewStatus === 'confirmed' ? '已确认' : row.reviewStatus === 'edited' ? '已修改' : row.reviewStatus === 'rejected' ? '已拒绝' : '自动识别';
     const status = row.error ? '失败' : row.confidence === 'low' ? '待核对' : review;
@@ -71,6 +78,12 @@ function renderLedgerRows() {
       <td>${row.evidenceId ? `<a href="/api/evidence/${escL(row.evidenceId)}.png" target="_blank" rel="noopener">截图</a>` : '—'}</td>
     </tr>`;
   }).join('');
+  const pager = $l('ledger-pager');
+  if (pager) {
+    pager.innerHTML = total > ledgerState.pageSize ? `<button type="button" class="small" data-page="prev" ${ledgerState.page===0?'disabled':''}>上一页</button><span>第 ${ledgerState.page+1}/${maxPage} 页</span><button type="button" class="small" data-page="next" ${ledgerState.page>=maxPage-1?'disabled':''}>下一页</button>` : '';
+    pager.querySelector('[data-page="prev"]')?.addEventListener('click', () => { ledgerState.page--; renderLedgerRows(); });
+    pager.querySelector('[data-page="next"]')?.addEventListener('click', () => { ledgerState.page++; renderLedgerRows(); });
+  }
 }
 
 async function loadDbStatus() {
@@ -80,7 +93,7 @@ async function loadDbStatus() {
     const res = await fetch('/api/bd/db-status', { cache: 'no-store' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || data.error || '读取失败');
-    const tables = Object.entries(data.tables || {}).map(([key, value]) => `<div><span>${escL(key)}</span><strong>${Number(value).toLocaleString('zh-CN')}</strong></div>`).join('');
+    const tables = Object.entries(data.tables || {}).map(([key, value]) => `<div><span>${escL(TABLE_LABELS[key] || key)}</span><strong>${Number(value).toLocaleString('zh-CN')}</strong></div>`).join('');
     box.innerHTML = `<div class="db-status-grid">
       <div><span>数据库体积</span><strong>${(data.databaseBytes / 1024 / 1024).toFixed(1)} MB</strong></div>
       <div><span>证据文件</span><strong>${Number(data.evidence?.files || 0).toLocaleString('zh-CN')} 个 / ${(Number(data.evidence?.bytes || 0) / 1024 / 1024).toFixed(0)} MB</strong></div>
@@ -99,6 +112,7 @@ function initLedger() {
   $l('ledger-refresh')?.addEventListener('click', () => { loadLedger(); loadDbStatus(); });
   $l('apply-ledger')?.addEventListener('click', () => loadLedger());
   $l('ledger-filter')?.addEventListener('submit', (event) => { event.preventDefault(); loadLedger(); });
+  $l('ledger-filter')?.addEventListener('change', () => loadLedger());
   loadLedger();
   loadDbStatus();
 }

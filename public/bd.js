@@ -102,8 +102,8 @@ function resultSummary(slots,timing){
   if(badCleanup.length)warnings.push(`${badCleanup.length} 个平台购物车状态未确认`);
   const times=valid.map(s=>Date.parse(s.observation.observed_at)).filter(Number.isFinite);
   const skew=times.length>1?(Math.max(...times)-Math.min(...times))/60000:null;
-  if(skew!=null&&skew>5)warnings.push(`三平台观察时差 ${skew.toFixed(1)} 分钟，超过 5 分钟口径`);
-  const complete=slots.length===3&&valid.length===3&&!badCleanup.length&&(skew==null||skew<=5);
+  if(skew!=null&&skew>15)warnings.push(`三平台观察时差 ${skew.toFixed(1)} 分钟，超过 15 分钟口径`);
+  const complete=slots.length===3&&valid.length===3&&!badCleanup.length&&(skew==null||skew<=15);
   const deltas=[];
   const byPlatform=Object.fromEntries(slots.map(s=>[s.platform,s]));
   for(const other of ['meituan','taobao_instant']){
@@ -239,4 +239,25 @@ openResult.addEventListener('click',async()=>{await refreshResult();resultPanel.
 $('refresh-result').addEventListener('click',()=>refreshResult());
 // 刷新页面后按比较组恢复结果，不重新提交采价。
 try{const saved=localStorage.getItem('bd-last-group');if(saved){lastGroupId=saved;loadResult(saved);}}catch{}
+
+// 平台是否可用由系统判断：未连接手机的自动采集平台直接禁用并说明原因，不让人点了才报错。
+async function loadPlatformAvailability(){
+  try{
+    const res=await fetch('/api/devices',{signal:AbortSignal.timeout(4000)});
+    if(!res.ok)return;
+    const data=await res.json();
+    for(const item of data.platforms||[]){
+      const card=form.querySelector('.platform-card input[value="'+UI_PLATFORM[item.platform]+'"]')?.closest('.platform-card');
+      const input=card?.querySelector('input');
+      const desc=card?.querySelector('.p-desc');
+      if(!card||!input||!desc)continue;
+      const available=item.connected&&item.configured;
+      input.disabled=!available;
+      card.classList.toggle('unavailable',!available);
+      desc.textContent=available?'已连接手机':item.configured?'手机未连接，暂不可用':'未配置设备';
+      if(!available)input.checked=false;
+    }
+  }catch{/* 设备状态读不到时保持默认，不阻断页面 */}
+}
+loadPlatformAvailability();
 form.querySelectorAll('input[name="platform"]').forEach(input=>input.addEventListener('change',()=>{const count=form.querySelectorAll('input[name="platform"]:checked').length;$('form-hint').textContent=count?`已选 ${count} 个平台`:'选择 1–3 个平台';}));

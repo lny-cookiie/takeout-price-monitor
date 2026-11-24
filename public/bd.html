@@ -61,7 +61,7 @@
       <p class="subtitle">按美团、淘宝、京东顺序上传结算页截图，工具自动识别门店、商品、规格、数量和金额费用。识别结果先落库，确认前可以修改。</p></div></div>
     <div class="shot-layout">
       <section class="panel">
-        <div class="panel-head"><div class="panel-title"><h2>1. 新建比较批次</h2><span class="panel-note">可留空，识别后仍会入库</span></div></div>
+        <div class="panel-head"><div class="panel-title"><h2>1. 批次信息（可留空）</h2><span class="panel-note">上传截图时会自动创建批次，不用先点按钮</span></div></div>
         <div class="panel-body">
           <form id="shot-batch-form" class="fields shot-fields" autocomplete="off">
             <label class="field"><span>城市</span><input name="city" placeholder="如 天津市"></label>
@@ -69,7 +69,7 @@
             <label class="field"><span>门店（可选）</span><input name="store" placeholder="如 鞍山西道店"></label>
             <label class="field"><span>商品（可选）</span><input name="item" placeholder="如 板烧鸡腿堡"></label>
           </form>
-          <div class="bd-actions"><button class="primary" type="button" id="create-shot-batch">创建批次</button><span class="muted smalltext" id="shot-batch-state">还没有批次</span></div>
+          <div class="bd-actions"><button class="secondary" type="button" id="create-shot-batch">新建空批次</button><span class="muted smalltext" id="shot-batch-state">还没有批次</span></div>
         </div>
       </section>
       <section class="panel">
@@ -109,7 +109,7 @@
     </section>
     <section class="panel">
       <div class="panel-head"><div class="panel-title"><h2>报价记录</h2><span class="panel-note" id="ledger-count">0 条</span></div></div>
-      <div class="panel-body table-wrap"><table class="ledger-table" id="ledger-table"><thead><tr><th>时间</th><th>来源</th><th>平台</th><th>门店</th><th>商品</th><th>应付</th><th>配送/打包</th><th>优惠</th><th>状态</th><th>证据</th></tr></thead><tbody></tbody></table></div>
+      <div class="panel-body table-wrap"><table class="ledger-table" id="ledger-table"><thead><tr><th>时间</th><th>来源</th><th>平台</th><th>门店</th><th>商品</th><th>应付</th><th>配送/打包</th><th>优惠</th><th>状态</th><th>证据</th></tr></thead><tbody></tbody></table></div><div class="pager" id="ledger-pager"></div>
     </section>
     <section class="panel">
       <div class="panel-head"><div class="panel-title"><h2>数据库状态</h2><span class="panel-note">只读统计</span></div></div>

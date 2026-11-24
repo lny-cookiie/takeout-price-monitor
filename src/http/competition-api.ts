@@ -265,6 +265,7 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
       if(!image.length||image.length>8_000_000){reply(413,{error:'image_too_large'});return true;}
       try {
         const recognized=await recognizeScreenshot({platform,image,filename:input.filename||'upload.png',model,evidenceStore:evidence,signal:AbortSignal.timeout(120_000),expected:{city:batch.batch.city,brand:batch.batch.brand,store:batch.batch.store,item:batch.batch.item}});
+        store.updateScreenshotBatchContext(batch.batch.id,{city:recognized.fields.city,brand:recognized.fields.brand,store:recognized.fields.storeName,item:recognized.fields.itemName});
         const record={id:crypto.randomUUID(),batchId:batch.batch.id,platform,createdAt:new Date().toISOString(),sourceFilename:input.filename||'upload.png',
           evidenceId:recognized.evidence.id,imageSha256:recognized.imageSha256,...recognized.fields,raw:recognized.raw,reconciled:recognized.reconciled,
           confidence:recognized.confidence,reviewStatus:'auto',issues:recognized.issues,error:null};

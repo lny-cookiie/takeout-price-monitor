@@ -55,7 +55,11 @@ async function createShotBatch() {
 }
 
 async function uploadShot(platform, file) {
-  if (!shotState.batchId) { shotToast('请先创建批次'); return; }
+  if (!shotState.batchId) {
+    // 能系统做的就不留给用户：第一次上传时自动用表单信息创建批次。
+    await createShotBatch();
+    if (!shotState.batchId) return;
+  }
   if (!file) return;
   if (file.size > 8 * 1024 * 1024) { shotToast('图片超过 8MB，请先压缩'); return; }
   const card = document.querySelector(`.upload-card[data-platform="${platform}"]`);
@@ -78,6 +82,7 @@ async function uploadShot(platform, file) {
     renderUploadGrid();
     renderShotResult();
     await loadShotBatches();
+    $s('shot-result-body')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     shotToast(SHOT_PLATFORMS[platform] + ' 截图识别完成');
   } catch (error) {
     shotToast(SHOT_PLATFORMS[platform] + ' 识别失败：' + error.message);

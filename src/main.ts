@@ -17,9 +17,10 @@ async function acquire() {
 }
 await acquire();
 try {
+  const host = process.env.HOST ?? '127.0.0.1';
   const port = Number(process.env.PORT ?? 4318);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT 无效');
-  const app = await createApplication({dataDir,port});
+  const app = await createApplication({dataDir,port,host});
   console.log(`包销 UE 与外卖竞争监测 v0.4.4 · ${app.baseUrl}`);
   let stopping = false;
   const stop = () => { if (stopping) return; stopping=true; void app.close().then(() => unlink(lockPath)).then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); }); };

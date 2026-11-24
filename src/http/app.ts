@@ -31,7 +31,7 @@ async function body(req: IncomingMessage, limit = 32_768): Promise<Record<string
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_json_body');
   return value as Record<string,unknown>;
 }
-export async function createApplication(options: { root?: string; dataDir?: string; port?: number; startScheduler?: boolean; model?: ModelConfig | null; androidTransport?:AndroidTransport } = {}) {
+export async function createApplication(options: { root?: string; dataDir?: string; port?: number; host?: string; startScheduler?: boolean; model?: ModelConfig | null; androidTransport?:AndroidTransport } = {}) {
   const root = resolve(options.root ?? process.cwd()), dataDir = resolve(options.dataDir ?? join(root,'.runtime'));
   await mkdir(dataDir,{ recursive:true });
   if (!process.env.MIDSCENE_RUN_DIR) process.env.MIDSCENE_RUN_DIR = join(dataDir,'midscene');
@@ -115,10 +115,10 @@ export async function createApplication(options: { root?: string; dataDir?: stri
     })().catch(e => { if (!res.headersSent) reply(res,e instanceof SyntaxError ? 400 : (e as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 400,{error:(e as Error).message.slice(0,180)}); else res.end(); });
   });
   server.requestTimeout = 10_000; server.headersTimeout = 10_000;
-  await new Promise<void>((ok,no) => { server.once('error',no); server.listen(options.port ?? 4318,'127.0.0.1',() => { server.off('error',no); ok(); }); });
+  await new Promise<void>((ok,no) => { server.once('error',no); server.listen(options.port ?? 4318, options.host ?? '127.0.0.1',() => { server.off('error',no); ok(); }); });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('listen_failed');
-  baseUrl = `http://127.0.0.1:${address.port}`;
+  baseUrl = `http://${options.host && options.host !== '0.0.0.0' ? options.host : '127.0.0.1'}:${address.port}`;
   const android=PLATFORMS.map((platform):Collector=>{
     // 美团走专用采集器（navigateMeituan 全链路 + 结算字段解析），其余平台走通用 androidCollector。
     if (platform === 'meituan') {

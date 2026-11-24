@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readdirSync, statSync } from 'node:fs';
 import type { SqliteStore } from './sqlite-store.js';
 import type { ModelAudit } from './model.js';
 import { BUSINESS_VERSION, digest, itemGate, liveSources, meals, normalize, platformNames, safeDate, storeGate, type Candidate, type Mapping, type Meal, type OrderImport, type Plan, type Profile, type Target } from '../domain/competition.js';
@@ -517,6 +518,14 @@ export class CompetitionStore {
     const quotes=this.db.prepare('SELECT * FROM screenshot_quotes WHERE batch_id=? ORDER BY created_at').all(id).map(r=>this.screenshotQuoteRow(r));
     return {batch:{id:String(row.id),createdAt:String(row.created_at),city:String(row.city),brand:String(row.brand),store:String(row.store),item:String(row.item),status:String(row.status)},quotes};
   }
+  updateScreenshotBatchContext(id:string, input:{city?:string|null;brand?:string|null;store?:string|null;item?:string|null}) {
+    const row=this.db.prepare('SELECT * FROM screenshot_batches WHERE id=?').get(id);
+    if(!row)return null;
+    const pick=(current:unknown,value:unknown):string=>String(current??'').trim()?String(current):String(value??'');
+    this.db.prepare('UPDATE screenshot_batches SET city=?,brand=?,store=?,item=? WHERE id=?').run(
+      pick(row.city,input.city),pick(row.brand,input.brand),pick(row.store,input.store),pick(row.item,input.item),id);
+    return this.screenshotBatch(id);
+  }
   screenshotBatches(limit=30) {
     return this.db.prepare('SELECT * FROM screenshot_batches ORDER BY created_at DESC LIMIT ?').all(limit).map(r=>({
       id:String(r.id),createdAt:String(r.created_at),city:String(r.city),brand:String(r.brand),store:String(r.store),item:String(r.item),status:String(r.status),
@@ -576,7 +585,7 @@ export class CompetitionStore {
     const count=(table:string)=>Number(this.db.prepare('SELECT COUNT(*) n FROM '+table).get()?.n??0);
     const size=Number(this.db.prepare('PRAGMA page_count').get()?.page_count??0)*Number(this.db.prepare('PRAGMA page_size').get()?.page_size??0);
     let evidenceCount=0,evidenceBytes=0;
-    try{const fs=require('node:fs');for(const f of fs.readdirSync(evidenceRoot)){const st=fs.statSync(evidenceRoot+'/'+f);if(f.endsWith('.png')){evidenceCount++;evidenceBytes+=st.size;}}}catch{}
+    try{for(const f of readdirSync(evidenceRoot)){const st=statSync(evidenceRoot+'/'+f);if(f.endsWith('.png')){evidenceCount++;evidenceBytes+=st.size;}}}catch{}
     return {databaseBytes:size,tables:{runs:count('runs'),slots:count('slots'),observations:count('observations'),quoteSnapshots:count('quote_snapshots'),catalog:count('monitor_catalog'),screenshotBatches:count('screenshot_batches'),screenshotQuotes:count('screenshot_quotes')},
       latestRuns:this.db.prepare('SELECT id,label,created_at FROM runs ORDER BY created_at DESC LIMIT 5').all().map(r=>({id:String(r.id),label:String(r.label),createdAt:String(r.created_at)})),
       latestQuote:this.db.prepare('SELECT MAX(observed_at) at FROM observations').get()?.at??null,
