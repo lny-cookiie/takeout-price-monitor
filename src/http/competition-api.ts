@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
-import {readFile} from 'node:fs/promises';
+import {readFile, writeFile, mkdir} from 'node:fs/promises';
+import {join} from 'node:path';
 import {readProgress} from '../adapters/live-progress.js';
 import { proposeMapping, rankCandidates } from '../application/matching.js';
 import { PLATFORMS, type Platform } from '../domain/contracts.js';
@@ -34,7 +35,7 @@ function trimFields<T extends object>(value:T):T {
   return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,typeof v==='string' ? v.trim() : v])) as T;
 }
 
-export function competitionApi(store: CompetitionStore, sources: AndroidSources, model: ModelGateway, evidence: EvidenceStore, tick: () => void,
+export function competitionApi(store: CompetitionStore, sources: AndroidSources, model: ModelGateway, evidence: EvidenceStore, dataDir: string, tick: () => void,
   cancelRun?: (runId: string) => {queued: number; running: number}) {
   let matching = false, testing = false;
   return async (method: string, url: URL, body: (limit?: number) => Promise<unknown>, reply: (status: number, data: unknown, type?: string) => void) => {
@@ -321,6 +322,38 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
       const csvRows=rows.map(r=>({...r,payable:r.payableFen==null?'':(r.payableFen/100).toFixed(2),subtotal:r.subtotalFen==null?'':(r.subtotalFen/100).toFixed(2),packaging:r.packagingFen==null?'':(r.packagingFen/100).toFixed(2),delivery:r.deliveryFen==null?'':(r.deliveryFen/100).toFixed(2),discount:r.discountFen==null?'':(r.discountFen/100).toFixed(2)}));
       if(path.endsWith('.csv')){reply(200,toCsv(columns,csvRows),'text/csv; charset=utf-8');return true;}
       reply(200,{rows,stats,columns});return true;
+    }
+    // ---- 首次设置向导：只做环境检查和本机记录，不保存平台密码 ----
+    const setupFile=join(dataDir,'setup.json');
+    if (method==='GET' && path==='/api/setup/status') {
+      let setup:Record<string,unknown>|null=null;
+      try{setup=JSON.parse(await readFile(setupFile,'utf8')) as Record<string,unknown>;}catch{setup=null;}
+      let adb:unknown=null;
+      try{adb=await deviceInventory(AbortSignal.timeout(6000));}catch{adb=null;}
+      reply(200,{completed:setup?.completed===true,setup,dataDir,model:model.status,catalogCount:store.catalog().length,
+        platforms:PLATFORMS.map(p=>{const source=sources.permitted(p)?sources.get(p):undefined;return {platform:p,name:platformNames[p],configured:!!source,
+          status:sources.status(p).status,expectedVersion:source?.appVersion??null,actualDevice:source?.device??null};}),adb});
+      return true;
+    }
+    if (method==='POST' && path==='/api/setup/phone') {
+      const input=validator<{serial?:string}>(object({serial:string(80,0)},[]),'手机检查')(await body(20_000));
+      const inventory=await deviceInventory(AbortSignal.timeout(8000));
+      const connected=inventory.devices.filter(d=>d.state==='device');
+      const serial=input.serial??connected[0]?.serial??null;
+      const platforms=await Promise.all(PLATFORMS.map(async p=>{
+        const source=sources.permitted(p)?sources.get(p):undefined;
+        const actual=serial&&source ? await installedAppVersion(serial,source.package).catch(()=>null) : null;
+        return {platform:p,name:platformNames[p],configured:!!source,expectedVersion:source?.appVersion??null,actualVersion:actual,
+          versionMatch:!!source&&!!actual&&source.appVersion===actual};
+      }));
+      reply(200,{...inventory,selectedSerial:serial,platforms});return true;
+    }
+    if (method==='POST' && path==='/api/setup/complete') {
+      const input=validator<{mode?:string;address?:string}>(object({mode:string(20,0),address:string(200,0)},[]),'完成设置')(await body(20_000));
+      const record={completed:true,at:new Date().toISOString(),mode:input.mode??'screenshot',address:input.address??'',dataDir};
+      await mkdir(dataDir,{recursive:true});
+      await writeFile(setupFile,JSON.stringify(record,null,2),'utf8');
+      reply(200,{completed:true,setup:record});return true;
     }
     return false;
   };

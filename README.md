@@ -23,7 +23,9 @@
 - **报价台账可查可导出。** 自动采集和截图识别的记录统一在数据台账里筛选，按批次看三家对比、完整性和证据，并一键下载 CSV；数据库状态也在一页里展示。
 - **失败会进知识库。** 每次真机失败自动记录平台、错误码、清理状态和最近步骤，并匹配 16 条[失败模式](前期调研/42_失败模式注册表.json)；修复后标注验证运行编号，同一错误再次出现会被识别为回退风险。
 
-## 快速开始
+## 从源码快速开始（内部）
+
+这一节只给开发人员看。BD 直接看下面的「开箱即用 Windows 包」。
 
 前置条件：Windows 10 或 11、Node.js 24.15 以上、一台开启 USB 调试的安卓手机。真机采价还需要 ADB 和本地视觉模型服务，仓库不携带模型文件和真机配置。
 
@@ -39,121 +41,60 @@ npm start            # 启动服务，默认 http://127.0.0.1:4318
 
 真机使用前，把 `android-sources.example.json` 复制为 `.runtime/android-sources.json`，填入设备序列号、应用版本和账号信息；真实配置只放在本地，`.runtime/` 已在 `.gitignore` 中排除。
 
-## 在另一台电脑部署（从 GitHub 开始）
+## 开箱即用 Windows 包
 
-这一节写给要独立使用工具的 BD：使用自己的 Windows 电脑、自己的安卓手机和自己的平台账号，从 GitHub 下载代码开始，到能打开页面、开始采集为止。
+BD 不再需要自己安装 Node、下载模型或编辑配置文件。我们这边生成一个内置运行环境、模型、ADB 和启动器的 Windows 包，BD 只需要下载、解压和双击。
 
-仓库只包含程序代码，不包含模型文件、手机配置、平台账号和数据库。第一次部署通常需要 30 到 60 分钟，主要时间花在安装 Node.js、手机驱动和模型文件上。
+### BD 的实际步骤
 
-### 第一步：准备清单
+1. 从公司网盘或共享盘拿到 `TakeoutPriceMonitor` 文件夹，解压到 D 盘，建议路径 `D:\TakeoutPriceMonitor`。
+2. 双击 `TakeoutPriceMonitor.exe`。启动器会自动启动本地模型和工具服务，并打开首次设置页面。
+3. 第一次设置：
+   - 只使用截图识别：选择「截图识别」，不需要连接手机，完成后直接上传结算截图。
+   - 使用手机自动采集：连接安卓手机，按提示打开 USB 调试、允许授权、登录三个平台并确认配送地址。
+4. 以后每天只需要双击同一个图标。关闭网页不会停止工具；右键托盘图标可以退出。
 
-- Windows 10 或 Windows 11 64 位电脑，至少有 10GB 空闲磁盘（模型、截图证据和数据库都占空间）。
-- Node.js 24.15 或更高版本，安装后在 PowerShell 里执行 `node -v` 能看到版本号。
-- Git（用来下载代码）；不想装 Git 也可以直接在 GitHub 页面点 Code → Download ZIP。
-- 一台安卓手机、一根能传数据的 USB 线，手机开发者选项里的「USB 调试」已经打开。
-- 从项目负责人处拿到本地部署包，里面应该有：模型服务目录（llama-server、Qwen3-VL-2B 模型文件和启动脚本）、模型 API 密钥、`.runtime/android-sources.json`（手机序列号、App 版本和页面配置）。这些文件不会出现在 GitHub 上。
-- 安卓 platform-tools（里面有 `adb.exe`），或者直接复用部署包里已经带好的 ADB。
+### 包里有什么
 
-如果只使用「截图识别」，可以不接手机，但仍然需要模型服务和 `.env`，因为识别是本地模型做的。
+- `TakeoutPriceMonitor.exe`：启动器，负责启动模型、启动服务、打开页面和托盘退出。
+- `dist`、`public`、`node_modules`：现有工具程序。
+- `runtime\node.exe`：内置 Node 运行环境，不要求电脑安装 Node。
+- `model`：本地视觉模型，截图识别和自动采集都用它。
+- `tools\adb`：手机连接工具。
+- `data`：第一次启动后生成，保存数据库、证据、设置和日志；不要删除，升级时也要保留。
 
-### 第二步：下载代码
+完整包约 2.5GB，主要体积是模型文件。这个包通过公司网盘或共享盘分发，不放进 GitHub 仓库。
 
-在 PowerShell 里执行：
+### 当前边界
+
+- **截图识别已经可以零配置使用**：不接手机、不导入商品目录，只要有完整模型包就能用。
+- **手机自动采集还需要平台页面配置**：不同平台 App 版本和配送地址会影响页面定位，当前包默认不携带真实账号和地址配置。自动采集前需要管理员把对应的 `android-sources.json` 放到 `data` 目录，或者使用后续版本的一键手机配置向导。
+- 安装包还没有做代码签名，Windows 可能显示 SmartScreen 提示；当前以绿色文件夹交付，后续再做正式安装器和签名。
+- 自动更新尚未接入；升级方式是用新版本替换程序文件，保留 `data` 目录。
+
+### 构建这个包（我们内部使用）
+
+构建机需要 Node.js 24.15、模型目录 `.runtime/local-model-lab`、ADB 和 Windows 自带的 C# 编译器。执行：
 
 ```powershell
-cd D:\
-git clone https://github.com/lny-cookiie/takeout-price-monitor.git
-cd takeout-price-monitor
+powershell -ExecutionPolicy Bypass -File scripts/release/build-portable.ps1
 ```
 
-路径建议用简单的英文目录，例如 `D:\takeout-price-monitor`，避免后续 ADB 和模型路径里出现难处理的空格或特殊字符。如果下载 ZIP，解压后同样进入这个目录。
+生成目录是 `dist-release/TakeoutPriceMonitor`。加 `-SkipModel` 只生成约 300MB 的测试包，不能用于交付。脚本会复制程序、裁剪生产依赖、复制 Node、模型和 ADB，并编译启动器。
 
-### 第三步：安装依赖并构建
+## 从源码开发（内部）
+
+下面这些命令只给开发和维护人员使用，BD 不需要执行。
 
 ```powershell
-node -v
 npm ci
+npm run check
+npm test
 npm run build
-```
-
-`npm ci` 安装项目依赖，`npm run build` 把 TypeScript 编译成 `dist/`，并生成页面脚本。两步都成功后再启动，否则 `npm start` 会提示找不到 `dist/main.js`。
-
-### 第四步：放入本地配置和模型
-
-先把仓库里的模板复制成 `.env`：
-
-```powershell
-Copy-Item .env.example .env
-```
-
-再按项目负责人提供的模型地址和密钥填写 `.env`，把 `android-sources.json` 放到 `.runtime/android-sources.json`。`.env` 至少需要这些内容：
-
-```text
-MIDSCENE_ADB_PATH=D:\takeout-price-monitor\.runtime\adb\adb.exe
-TAKEOUT_MODEL_BASE_URL=http://127.0.0.1:11436/v1
-TAKEOUT_MODEL_NAME=qwen3-vl-2b-local
-TAKEOUT_MODEL_FAMILY=qwen3-vl
-TAKEOUT_MODEL_API_KEY=由负责人提供
-TAKEOUT_MODEL_STRUCTURED_OUTPUT=json_object
-```
-
-模型地址只允许 HTTPS，或者本机 `localhost`、`127.0.0.1` 的 HTTP；不要填带用户名、密码或查询参数的地址。模型服务要在这台电脑上先启动，浏览器或 PowerShell 访问 `http://127.0.0.1:11436/health` 返回 200 才算就绪。部署包里通常带有 `start-model.cmd` 或类似的启动脚本，先运行它；如果没有，按项目负责人给的模型启动命令运行，不要自己改模型文件名。
-
-安卓配置需要和这台电脑实际连接的手机、手机上安装的 App 版本一致。京东、美团、淘宝三个平台分别有一条配置；任何一个平台没有配置，自动采集页里对应的平台会显示为不可用，不会让人反复点。
-
-自动采集还需要目标商品已经登记在「商品目录」里。新电脑的数据库是空的，第一次使用前让负责人导入该 BD 负责的城市、品牌、门店和商品；没有目录时自动采集会提示找不到目标，截图识别不受影响。
-
-### 第五步：连接手机并检查
-
-1. 用 USB 线连接手机，手机上如果弹出「允许 USB 调试」的授权框，勾选始终允许并确认。
-2. 在 PowerShell 里执行 `adb devices`，能看到一行 `device` 才算连接成功；显示 `unauthorized` 时重新在手机上确认授权。
-3. 检查 `.runtime/android-sources.json` 里的 `device` 是否是 `adb devices` 显示的序列号，`appVersion` 是否和手机设置里看到的 App 版本一致。
-4. 启动模型服务，确认 `http://127.0.0.1:11436/health` 返回 200。
-
-### 第六步：启动服务
-
-```powershell
 npm start
 ```
 
-看到 `http://127.0.0.1:4318` 后，在浏览器打开：
-
-```text
-http://127.0.0.1:4318/bd
-```
-
-这个 PowerShell 窗口要一直开着；关闭窗口服务就停止。第一次启动会自动在 `.runtime/` 下创建数据库和证据目录。
-
-### 第七步：逐项确认能用
-
-1. 页面顶部能看到「自动采集」「截图识别」「数据台账」三个入口。
-2. 自动采集页的平台卡片显示「已连接手机」；显示「手机未连接，暂不可用」时回到第五步检查 ADB 和序列号。
-3. 截图识别页上传一张包含「应付总额」的结算页截图，能看到门店、商品、金额和费用，说明模型服务正常。
-4. 自动采集页填写一个已经在商品目录里登记过的城市、品牌、门店和商品，选择平台开始采集，进度条和日志会开始变化。
-5. 数据台账页能看到刚才的截图识别记录；点「下载 CSV」能打开中文不乱码的表格。
-
-### 第八步：停止、备份和更新
-
-- 停止服务：在运行 `npm start` 的窗口按 `Ctrl+C`。
-- 备份数据：停止服务后复制整个 `.runtime/` 目录，里面有数据库、证据截图和本地配置；不要在服务运行时直接复制数据库。
-- 更新代码：执行 `git pull`，再执行 `npm ci`、`npm run build`，然后重新 `npm start`。更新前先备份 `.runtime/`。
-- 更换手机或 App 自动更新后，`.runtime/android-sources.json` 里的 `device`、`appVersion` 要同步修改，然后重启服务；版本不一致时自动采集会拒绝启动，这是为了避免按旧页面结构误操作。
-
-### 常见问题
-
-| 现象 | 原因和处理 |
-| --- | --- |
-| `npm start` 提示端口被占用 | 用 `$env:PORT = 4320` 换端口，再打开 `http://127.0.0.1:4320/bd` |
-| 自动采集页平台全部显示不可用 | 手机没连、ADB 路径不对，或者 `.runtime/android-sources.json` 里没有对应平台配置 |
-| 提交采集提示找不到目标 | 商品目录没有这个城市、品牌、门店、商品的记录，让负责人导入后再试 |
-| 截图识别提示模型未配置 | `.env` 没有放到项目根目录，或者模型地址、密钥填错 |
-| 截图识别提示网络错误 | 本地模型服务没有启动，先打开 `http://127.0.0.1:11436/health` 确认 |
-| 启动时报 App 版本不一致 | 更新 `.runtime/android-sources.json` 的 `appVersion` 和 `device`，重启服务 |
-| 页面能打开但采集没有进度 | 看窗口里的日志和失败原因，按日志里的错误码查 [失败与修复知识库](前期调研/41_失败与修复知识库.md) |
-
-### 安全提醒
-
-`.env` 和 `.runtime/` 都不能提交到 GitHub，里面可能有模型密钥、手机序列号、账号和采集证据。这个工具默认只监听本机，不要直接把 4318 端口映射到公网；需要多人共用时先加登录认证和 HTTPS，并遵守平台使用条款和公司数据合规要求。
+源码启动后的地址是 `http://127.0.0.1:4318/bd`。真正的模型和手机配置仍然只放在本地 `.runtime` 或绿色包的 `data` 目录，不提交到仓库。
 
 ## 界面操作
 

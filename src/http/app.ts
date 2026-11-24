@@ -47,7 +47,7 @@ export async function createApplication(options: { root?: string; dataDir?: stri
   const browser = new BrowserPool(), evidence = new EvidenceStore(join(dataDir,'evidence'));
   let scheduler: Scheduler;
   let baseUrl = '';
-  const business = competitionApi(market,sources,model,evidence,()=>scheduler.tick(),(runId)=>scheduler.cancelRun(runId));
+  const business = competitionApi(market,sources,model,evidence,dataDir,()=>scheduler.tick(),(runId)=>scheduler.cancelRun(runId));
   const reply = (res: ServerResponse, code: number, data: unknown, type = 'application/json; charset=utf-8') => {
     res.writeHead(code,{ 'Content-Type':type, 'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff', 'Referrer-Policy':'same-origin', 'X-Frame-Options':'DENY', 'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" });
     res.end(Buffer.isBuffer(data) || typeof data === 'string' ? data : JSON.stringify(data));
@@ -106,7 +106,8 @@ export async function createApplication(options: { root?: string; dataDir?: stri
         reply(res,200,fixtureQuote(b.platform as Platform,storeRow,items,b.fault as Fault)); return;
       }
       if (url.pathname==='/' ) { res.writeHead(302, {'Location':'/bd'}); res.end(); return; }
-      const files: Record<string,[string,string]> = { '/collection.css':['collection.css','text/css; charset=utf-8'], '/ue':['ue.html','text/html; charset=utf-8'], '/ue/':['ue.html','text/html; charset=utf-8'], '/ue.js':['ue.js','text/javascript; charset=utf-8'], '/ue.css':['ue.css','text/css; charset=utf-8'], '/app.js':['app.js','text/javascript; charset=utf-8'], '/styles.css':['styles.css','text/css; charset=utf-8'], '/fixture.js':['fixture.js','text/javascript; charset=utf-8'], '/bd':['bd.html','text/html; charset=utf-8'], '/bd/':['bd.html','text/html; charset=utf-8'], '/bd.js':['bd.js','text/javascript; charset=utf-8'], '/bd-screenshot.js':['bd-screenshot.js','text/javascript; charset=utf-8'], '/bd-ledger.js':['bd-ledger.js','text/javascript; charset=utf-8'], '/bd.css':['bd.css','text/css; charset=utf-8'] };
+      const files: Record<string,[string,string]> = { '/collection.css':['collection.css','text/css; charset=utf-8'], '/ue':['ue.html','text/html; charset=utf-8'], '/ue/':['ue.html','text/html; charset=utf-8'], '/ue.js':['ue.js','text/javascript; charset=utf-8'], '/ue.css':['ue.css','text/css; charset=utf-8'], '/app.js':['app.js','text/javascript; charset=utf-8'], '/styles.css':['styles.css','text/css; charset=utf-8'], '/fixture.js':['fixture.js','text/javascript; charset=utf-8'], '/bd':['bd.html','text/html; charset=utf-8'], '/bd/':['bd.html','text/html; charset=utf-8'], '/bd.js':['bd.js','text/javascript; charset=utf-8'], '/bd-screenshot.js':['bd-screenshot.js','text/javascript; charset=utf-8'], '/bd-ledger.js':['bd-ledger.js','text/javascript; charset=utf-8'], '/bd.css':['bd.css','text/css; charset=utf-8'],
+        '/setup':['setup.html','text/html; charset=utf-8'], '/setup/':['setup.html','text/html; charset=utf-8'], '/setup.js':['setup.js','text/javascript; charset=utf-8'], '/setup.css':['setup.css','text/css; charset=utf-8'] };
       if (method === 'GET' && files[url.pathname]) {
         const [file,type] = files[url.pathname]!;
         reply(res,200,await readFile(join(root,'public',file)),type); return;

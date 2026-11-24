@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>首次设置 · 三平台比价工具</title><link rel="stylesheet" href="/ue.css"><link rel="stylesheet" href="/setup.css"></head>
+<body><header class="topbar"><div class="brand"><span class="brand-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>三平台比价工具</span></div><div class="top-right"><span class="demo-tag">首次设置</span></div></header>
+<main class="setup-main">
+  <div class="setup-head"><div class="eyebrow">第一次使用，只需要几分钟</div><h1>把工具准备好</h1><p>先检查电脑和手机，再选择使用方式。设置完成后，以后双击桌面图标即可使用。</p><div class="setup-progress"><span id="step-dot-1" class="on">1 检查环境</span><span id="step-dot-2">2 连接手机</span><span id="step-dot-3">3 业务资料</span><span id="step-dot-4">4 完成</span></div></div>
+
+  <section class="setup-panel" aria-labelledby="env-title">
+    <div class="setup-panel-head"><h2 id="env-title">1. 检查环境</h2><button type="button" class="small" id="refresh-status">重新检查</button></div>
+    <div id="status-cards" class="status-grid"><p class="muted">正在检查…</p></div>
+    <p class="setup-tip" id="status-tip"></p>
+  </section>
+
+  <section class="setup-panel" aria-labelledby="mode-title">
+    <div class="setup-panel-head"><h2 id="mode-title">2. 选择使用方式</h2><span class="muted smalltext">以后可以在设置里重新选择</span></div>
+    <div class="mode-grid">
+      <label class="mode-card"><input type="radio" name="mode" value="screenshot" checked><strong>截图识别</strong><span>不需要手机。上传美团、淘宝、京东的结算页截图，工具自动识别店、品、价、券。</span></label>
+      <label class="mode-card"><input type="radio" name="mode" value="auto"><strong>手机自动采集</strong><span>需要连接安卓手机。工具自动打开三个平台，按比较组采集真实结算价。</span></label>
+      <label class="mode-card"><input type="radio" name="mode" value="both"><strong>两个都要</strong><span>先用截图识别，也可以接手机自动采集，两个入口都在。</span></label>
+    </div>
+  </section>
+
+  <section class="setup-panel" aria-labelledby="phone-title">
+    <div class="setup-panel-head"><h2 id="phone-title">3. 连接手机（使用自动采集时）</h2><button type="button" class="small" id="check-phone">检查手机</button></div>
+    <div id="phone-box"><p class="muted">只使用截图识别可以跳过这一步。</p></div>
+  </section>
+
+  <section class="setup-panel" aria-labelledby="data-title">
+    <div class="setup-panel-head"><h2 id="data-title">4. 业务资料</h2><span class="muted smalltext">都可以之后再补</span></div>
+    <label class="setup-field"><span>测试配送地址（自动采集用）</span><input id="setup-address" placeholder="例如 天津市南开区××路×号"><small>只保存在这台电脑，用来确认结算页地址。</small></label>
+    <div class="catalog-box"><div><strong>商品清单</strong><p class="muted smalltext">自动采集需要目标商品已经登记。可以先导入，也可以之后让管理员导入。</p></div>
+      <div class="catalog-actions"><a class="link-button" href="/api/market/catalog/template.csv" download>下载模板</a><label class="link-button">导入 CSV<input id="catalog-file" type="file" accept=".csv,text/csv" hidden></label><span id="catalog-state" class="muted smalltext">还没有导入</span></div>
+    </div>
+  </section>
+
+  <div class="setup-actions"><button type="button" class="primary" id="finish-setup">完成设置，进入工具</button><span id="finish-state" class="muted smalltext"></span></div>
+</main>
+<div id="setup-toast" role="status" aria-live="polite"></div>
+<script type="module" src="/setup.js"></script></body></html>
