@@ -47,8 +47,8 @@ BD 不再需要自己安装 Node、下载模型或编辑配置文件。我们这
 
 ### BD 的实际步骤
 
-1. 从公司网盘或共享盘拿到 `TakeoutPriceMonitor` 文件夹，解压到 D 盘，建议路径 `D:\TakeoutPriceMonitor`。
-2. 双击 `TakeoutPriceMonitor.exe`。启动器会自动启动本地模型和工具服务，并打开首次设置页面。
+1. 打开 GitHub 仓库的 Releases 页面，下载 `TakeoutPriceMonitor-Setup-0.5.0.exe`，双击安装到 D 盘，建议路径 `D:\TakeoutPriceMonitor`。
+2. 双击桌面上的「三平台比价工具」。第一次启动时，启动器会从同一个 GitHub Release 下载模型文件，界面上会显示下载进度；模型约 2.3GB，下载一次后以后不再下载。下载完成后自动启动工具服务并打开首次设置页面。
 3. 第一次设置：
    - 只使用截图识别：选择「截图识别」，不需要连接手机，完成后直接上传结算截图。
    - 使用手机自动采集：连接安卓手机，按提示打开 USB 调试、允许授权、登录三个平台并确认配送地址。
@@ -56,21 +56,30 @@ BD 不再需要自己安装 Node、下载模型或编辑配置文件。我们这
 
 ### 包里有什么
 
-- `TakeoutPriceMonitor.exe`：启动器，负责启动模型、启动服务、打开页面和托盘退出。
+- `TakeoutPriceMonitor.exe`：启动器，负责下载模型、启动服务、打开页面和托盘退出。
 - `dist`、`public`、`node_modules`：现有工具程序。
 - `runtime\node.exe`：内置 Node 运行环境，不要求电脑安装 Node。
-- `model`：本地视觉模型，截图识别和自动采集都用它。
+- `model`：第一次启动时从 GitHub Release 下载的本地视觉模型。
 - `tools\adb`：手机连接工具。
 - `data`：第一次启动后生成，保存数据库、证据、设置和日志；不要删除，升级时也要保留。
 
-完整包约 2.5GB，主要体积是模型文件。这个包通过公司网盘或共享盘分发，不放进 GitHub 仓库。
+### GitHub Release 里有什么
+
+GitHub 单个 Release 文件不能超过 2GB，所以不能把 2.57GB 的完整文件夹塞成一个文件。所有文件仍然全部放在同一个 GitHub Release 里，安装器第一次启动时自动下载和校验：
+
+- `TakeoutPriceMonitor-Setup-0.5.0.exe`：安装器，约 66MB。
+- `Qwen3-VL-2B-Instruct-Q8_0.gguf`：主模型，约 1.75GB。
+- `mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf`：视觉投影模型，约 424MB。
+- `llama-vulkan.zip`：模型运行程序，约 37MB。
+
+启动器按上面的文件名从 `https://github.com/lny-cookiie/takeout-price-monitor/releases/latest/download/` 自动下载；不需要 BD 自己找网盘，也不需要手动合并文件。
 
 ### 当前边界
 
-- **截图识别已经可以零配置使用**：不接手机、不导入商品目录，只要有完整模型包就能用。
-- **手机自动采集还需要平台页面配置**：不同平台 App 版本和配送地址会影响页面定位，当前包默认不携带真实账号和地址配置。自动采集前需要管理员把对应的 `android-sources.json` 放到 `data` 目录，或者使用后续版本的一键手机配置向导。
-- 安装包还没有做代码签名，Windows 可能显示 SmartScreen 提示；当前以绿色文件夹交付，后续再做正式安装器和签名。
-- 自动更新尚未接入；升级方式是用新版本替换程序文件，保留 `data` 目录。
+- **截图识别已经可以零配置使用**：不接手机、不导入商品目录，只要有 GitHub Release 里的模型就能用；模型在第一次启动时自动下载。
+- **手机自动采集还需要平台页面配置**：不同平台 App 版本和配送地址会影响页面定位，当前安装包默认不携带真实账号和地址配置。自动采集前需要管理员把对应的 `android-sources.json` 放到 `data` 目录，或者使用后续版本的一键手机配置向导。
+- 安装器已经生成，但还没有做代码签名，Windows 可能显示 SmartScreen 提示；需要在提示里选择「更多信息 → 仍要运行」。
+- 自动更新尚未接入；升级方式是运行新版安装器覆盖安装，`data` 目录会保留。
 
 ### 构建这个包（我们内部使用）
 

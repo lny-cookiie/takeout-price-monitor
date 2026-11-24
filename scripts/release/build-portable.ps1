@@ -1,6 +1,7 @@
 ﻿# 生成免安装绿色包：内置 Node、程序、模型、ADB 和启动器。构建机执行，不要求 BD 安装开发环境。
 param(
   [switch]$SkipModel,
+  [switch]$NoModel,
   [string]$OutDir = 'dist-release'
 )
 $ErrorActionPreference = 'Stop'
@@ -39,7 +40,9 @@ if (Test-Path (Join-Path $adbSource 'adb.exe')) {
 
 Write-Host '5/7 复制模型'
 $modelSource = Join-Path $Root '.runtime\local-model-lab'
-if ($SkipModel) {
+if ($NoModel) {
+  Write-Host '跳过模型目录，生成不含模型的安装包'
+} elseif ($SkipModel) {
   Write-Warning '跳过模型复制，生成的是测试包，不能用于交付'
   New-Item -ItemType Junction -Path (Join-Path $Stage 'model') -Target $modelSource | Out-Null
 } elseif (Test-Path (Join-Path $modelSource 'vulkan\llama-server.exe')) {
@@ -54,7 +57,7 @@ Write-Host '6/7 编译并复制启动器'
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { throw '找不到 Windows 自带 C# 编译器 csc.exe' }
 $launcherOut = Join-Path $Stage 'TakeoutPriceMonitor.exe'
-& $csc /nologo /target:winexe /codepage:65001 "/out:$launcherOut" (Join-Path $Root 'packaging\launcher\Launcher.cs')
+& $csc /nologo /target:winexe /codepage:65001 /r:System.IO.Compression.FileSystem.dll "/out:$launcherOut" (Join-Path $Root 'packaging\launcher\Launcher.cs')
 if ($LASTEXITCODE -ne 0) { throw '启动器编译失败' }
 if (Test-Path 'android-sources.example.json') { New-Item -ItemType Directory -Path (Join-Path $Stage 'config') -Force | Out-Null; Copy-Item 'android-sources.example.json' (Join-Path $Stage 'config') -Force }
 Copy-Item '.env.example' (Join-Path $Stage 'config\.env.example') -Force -ErrorAction SilentlyContinue

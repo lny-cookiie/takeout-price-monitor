@@ -4,6 +4,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -38,6 +39,7 @@ static class Launcher
         CreateTray();
         try
         {
+            EnsureModel();
             StartAll();
         }
         catch (Exception e)
@@ -80,6 +82,61 @@ static class Launcher
         bool done = File.Exists(setup) && File.ReadAllText(setup).IndexOf("\"completed\":true", StringComparison.Ordinal) >= 0;
         OpenBrowser(done ? "/bd" : "/setup");
             tray.ShowBalloonTip(3000, "三平台比价工具", done ? "工具已启动" : "首次使用，请按设置向导完成配置", ToolTipIcon.Info);
+    }
+
+    const string ReleaseBase = "https://github.com/lny-cookiie/takeout-price-monitor/releases/latest/download/";
+
+    // 安装包不带模型，第一次启动时从 GitHub Release 下载；下载量约 2.3GB。
+    static void EnsureModel()
+    {
+        string dir = Path.Combine(Root, "model");
+        Directory.CreateDirectory(dir);
+        string gguf = Path.Combine(dir, "Qwen3-VL-2B-Instruct-Q8_0.gguf");
+        string mmproj = Path.Combine(dir, "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf");
+        string server = Path.Combine(dir, "vulkan", "llama-server.exe");
+        string key = Path.Combine(dir, "api-key");
+        if (!File.Exists(gguf)) DownloadAsset("Qwen3-VL-2B-Instruct-Q8_0.gguf", gguf, "模型主文件");
+        if (!File.Exists(mmproj)) DownloadAsset("mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf", mmproj, "视觉模型文件");
+        if (!File.Exists(server))
+        {
+            string zip = Path.Combine(dir, "llama-vulkan.zip");
+            DownloadAsset("llama-vulkan.zip", zip, "模型运行程序");
+            ZipFile.ExtractToDirectory(zip, dir);
+            try { File.Delete(zip); } catch { }
+        }
+        if (!File.Exists(key)) File.WriteAllText(key, Guid.NewGuid().ToString("N"), new UTF8Encoding(false));
+    }
+
+    static void DownloadAsset(string name, string target, string label)
+    {
+        string url = ReleaseBase + name;
+        using (var form = new Form())
+        using (var bar = new ProgressBar())
+        using (var text = new Label())
+        using (var client = new WebClient())
+        {
+            form.Text = "三平台比价工具 · 首次准备";
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            form.MinimizeBox = false;
+            form.MaximizeBox = false;
+            form.TopMost = true;
+            form.Width = 460;
+            form.Height = 150;
+            text.Text = "正在从 GitHub 下载" + label + "，请保持网络连接…";
+            text.Left = 20; text.Top = 18; text.Width = 410; text.Height = 40;
+            bar.Left = 20; bar.Top = 66; bar.Width = 410; bar.Height = 22;
+            form.Controls.Add(text); form.Controls.Add(bar);
+            bool done = false;
+            Exception failure = null;
+            client.DownloadProgressChanged += delegate(object s, DownloadProgressChangedEventArgs e) { bar.Value = Math.Min(100, e.ProgressPercentage); };
+            client.DownloadFileCompleted += delegate(object s, System.ComponentModel.AsyncCompletedEventArgs e) { failure = e.Error; done = true; };
+            form.Show();
+            client.DownloadFileAsync(new Uri(url), target);
+            while (!done) { Application.DoEvents(); Thread.Sleep(50); }
+            form.Close();
+            if (failure != null) throw new Exception("从 GitHub 下载" + label + "失败：" + failure.Message + "\n地址：" + url);
+        }
     }
 
     static void StartModel()
