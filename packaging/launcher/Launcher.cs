@@ -26,6 +26,7 @@ static class Launcher
     [STAThread]
     static void Main()
     {
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
         bool created;
         single = new Mutex(true, "TakeoutPriceMonitorLauncher", out created);
         if (!created) { MessageBox.Show("工具已经在运行，请查看右下角托盘图标。", "三平台比价工具"); return; }
@@ -110,10 +111,10 @@ static class Launcher
     static void DownloadAsset(string name, string target, string label)
     {
         string url = ReleaseBase + name;
+        string curl = Path.Combine(Environment.SystemDirectory, "curl.exe");
         using (var form = new Form())
-        using (var bar = new ProgressBar())
         using (var text = new Label())
-        using (var client = new WebClient())
+        using (var bar = new ProgressBar())
         {
             form.Text = "三平台比价工具 · 首次准备";
             form.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -121,24 +122,40 @@ static class Launcher
             form.MinimizeBox = false;
             form.MaximizeBox = false;
             form.TopMost = true;
-            form.Width = 460;
-            form.Height = 150;
+            form.Width = 500;
+            form.Height = 155;
             text.Text = "正在从 GitHub 下载" + label + "，请保持网络连接…";
-            text.Left = 20; text.Top = 18; text.Width = 410; text.Height = 40;
-            bar.Left = 20; bar.Top = 66; bar.Width = 410; bar.Height = 22;
+            text.Left = 20; text.Top = 16; text.Width = 450; text.Height = 46;
+            bar.Left = 20; bar.Top = 70; bar.Width = 450; bar.Height = 20;
+            bar.Style = ProgressBarStyle.Marquee;
             form.Controls.Add(text); form.Controls.Add(bar);
-            bool done = false;
-            Exception failure = null;
-            client.DownloadProgressChanged += delegate(object s, DownloadProgressChangedEventArgs e) { bar.Value = Math.Min(100, e.ProgressPercentage); };
-            client.DownloadFileCompleted += delegate(object s, System.ComponentModel.AsyncCompletedEventArgs e) { failure = e.Error; done = true; };
             form.Show();
-            client.DownloadFileAsync(new Uri(url), target);
-            while (!done) { Application.DoEvents(); Thread.Sleep(50); }
+            var psi = new ProcessStartInfo(curl, "-L --fail --retry 3 --silent --show-error --output \"" + target + "\" \"" + url + "\"");
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            var p = Process.Start(psi);
+            var started = DateTime.UtcNow;
+            while (!p.HasExited)
+            {
+                Application.DoEvents();
+                try
+                {
+                    var downloaded = new FileInfo(target).Length / (1024 * 1024);
+                    text.Text = "正在从 GitHub 下载" + label + "（已下载 " + downloaded + " MB），请保持网络连接…";
+                }
+                catch { }
+                if ((DateTime.UtcNow - started).TotalMinutes > 90)
+                {
+                    try { p.Kill(); } catch { }
+                    form.Close();
+                    throw new Exception("从 GitHub 下载" + label + "超过 90 分钟仍未完成，请检查网络后重试。");
+                }
+                Thread.Sleep(300);
+            }
             form.Close();
-            if (failure != null) throw new Exception("从 GitHub 下载" + label + "失败：" + failure.Message + "\n地址：" + url);
+            if (p.ExitCode != 0) throw new Exception("从 GitHub 下载" + label + "失败，curl 退出码 " + p.ExitCode + "。地址：" + url);
         }
     }
-
     static void StartModel()
     {
         string exe = Path.Combine(Root, "model", "vulkan", "llama-server.exe");
