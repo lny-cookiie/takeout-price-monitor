@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>管理员审核 · 三平台比价工具</title><link rel="stylesheet" href="/ue.css"><link rel="stylesheet" href="/setup.css"></head>
+<body><header class="topbar"><div class="brand"><span class="brand-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>三平台比价工具</span></div><div class="top-right"><span class="demo-tag">管理员审核</span></div></header>
+<main class="setup-main">
+  <div class="setup-head"><div class="eyebrow">只有管理员需要打开</div><h1>审核 BD 的手机配置</h1><p>BD 提交城市、配送地址、门店地址和账号备注后，在这里核对并批准。审核通过后重启工具服务，自动采集才会启用。</p></div>
+  <section class="setup-panel">
+    <div class="setup-panel-head"><h2>管理员审核码</h2><span class="muted smalltext">审核码在 data\admin-pin.txt</span></div>
+    <div class="bd-actions"><input id="admin-pin" type="password" placeholder="输入审核码" style="padding:9px 10px;border:1px solid #ddd4c6;border-radius:6px"><button type="button" class="primary" id="load-pending">查看待审核</button><span id="admin-state" class="muted smalltext"></span></div>
+  </section>
+  <section class="setup-panel">
+    <div class="setup-panel-head"><h2>待审核内容</h2></div>
+    <div id="pending-box"><p class="muted">输入审核码后查看。</p></div>
+  </section>
+</main>
+<div id="setup-toast" role="status" aria-live="polite"></div>
+<script type="module" src="/admin.js"></script></body></html>

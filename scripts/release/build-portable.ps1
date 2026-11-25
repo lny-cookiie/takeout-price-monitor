@@ -60,6 +60,7 @@ $launcherOut = Join-Path $Stage 'TakeoutPriceMonitor.exe'
 & $csc /nologo /target:winexe /codepage:65001 /r:System.IO.Compression.FileSystem.dll "/out:$launcherOut" (Join-Path $Root 'packaging\launcher\Launcher.cs')
 if ($LASTEXITCODE -ne 0) { throw '启动器编译失败' }
 if (Test-Path 'android-sources.example.json') { New-Item -ItemType Directory -Path (Join-Path $Stage 'config') -Force | Out-Null; Copy-Item 'android-sources.example.json' (Join-Path $Stage 'config') -Force }
+if (Test-Path 'config\android-sources.template.json') { Copy-Item 'config\android-sources.template.json' (Join-Path $Stage 'config') -Force }
 Copy-Item '.env.example' (Join-Path $Stage 'config\.env.example') -Force -ErrorAction SilentlyContinue
 
 Write-Host '7/7 写版本信息'

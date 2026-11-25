@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {createHash, randomBytes} from 'node:crypto';
 import {readFile, writeFile, mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {readProgress} from '../adapters/live-progress.js';
@@ -7,6 +7,7 @@ import { PLATFORMS, type Platform } from '../domain/contracts.js';
 import { array, boolean, candidateSchema, meals, number, object, orderSchema, planSchema, profileSchema, string, validator,
   enumOf, type Candidate, type Mapping, type Meal, type OrderImport, type Plan, type Profile, type Target } from '../domain/competition.js';
 import { comparisonRows, csv, selectRows, summarizeBatch } from '../application/comparison.js';
+import { digest } from '../domain/competition.js';
 import { dayInShanghai } from '../application/scheduler.js';
 import { platformNames } from '../domain/competition.js';
 import type { CompetitionStore } from '../infra/competition-store.js';
@@ -33,6 +34,17 @@ const jdSavedRunCheck=validator<JdSavedRunInput>(jdSavedRunInputSchema,'京东�
 const jdStoreCheck=validator<JdStoreInput>(jdStoreInputSchema,'负责门店');
 function trimFields<T extends object>(value:T):T {
   return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,typeof v==='string' ? v.trim() : v])) as T;
+}
+
+// 本机管理员审核码：优先环境变量，否则首次使用时生成到 data/admin-pin.txt。
+async function adminPinFor(dataDir:string) {
+  if (process.env.TAKEOUT_ADMIN_PIN) return process.env.TAKEOUT_ADMIN_PIN;
+  const file=join(dataDir,'admin-pin.txt');
+  try { const pin=(await readFile(file,'utf8')).trim(); if(pin)return pin; } catch { /* 首次生成 */ }
+  await mkdir(dataDir,{recursive:true});
+  const pin=randomBytes(4).toString('hex');
+  await writeFile(file,pin,'utf8');
+  return pin;
 }
 
 export function competitionApi(store: CompetitionStore, sources: AndroidSources, model: ModelGateway, evidence: EvidenceStore, dataDir: string, tick: () => void,
@@ -354,6 +366,63 @@ export function competitionApi(store: CompetitionStore, sources: AndroidSources,
       await mkdir(dataDir,{recursive:true});
       await writeFile(setupFile,JSON.stringify(record,null,2),'utf8');
       reply(200,{completed:true,setup:record});return true;
+    }
+    // ---- BD 自助填写手机配置，提交后由管理员在本机审核 ----
+    if (method==='POST' && path==='/api/setup/apply-phone') {
+      const input=validator<{serial?:string;city?:string;address?:string;storeAddress?:string;accounts?:Record<string,string>}>(
+        object({serial:string(80,0),city:string(80,0),address:string(200,0),storeAddress:string(250,0),
+          accounts:object({jd:string(80,0),meituan:string(80,0),taobao_instant:string(80,0)},[])},[]),'手机配置提交')(await body(30_000));
+      let serial=input.serial?.trim();
+      if(!serial){const inventory=await deviceInventory(AbortSignal.timeout(6000));serial=inventory.devices.find(d=>d.state==='device')?.serial;}
+      if(!serial)throw new Error('没有检测到已授权的手机');
+      if(!input.city?.trim()||!input.address?.trim()||!input.storeAddress?.trim())throw new Error('城市、配送地址和门店地址都要填写');
+      const templatePath=join(dataDir,'..','config','android-sources.template.json');
+      let template:any[];
+      try{template=JSON.parse(await readFile(templatePath,'utf8'));}catch{throw new Error('安装包缺少手机配置模板，请重新安装完整包');}
+      const accounts=input.accounts??{};
+      const sources=template.map(row=>{
+        const account=(accounts[row.platform]||('bd-'+row.platform+'-'+serial!.slice(-6))).trim();
+        const patched={...row,device:serial,account,point:input.address!.trim(),
+          access:{reviewedBy:'BD提交，管理员待审核',reference:'首次设置向导提交，管理员审核通过后生效',expiresAt:'2027-12-31T00:00:00.000Z',allowedUse:'competition_monitoring'}};
+        patched.selectors={...row.selectors};
+        if(patched.selectors.point){patched.selectors.point={...patched.selectors.point,text:input.address!.trim(),textHash:digest(input.address!.trim())};}
+        if(patched.selectors.homePoint){patched.selectors.homePoint={...patched.selectors.homePoint,text:input.address!.trim(),textHash:digest(input.address!.trim())};}
+        if(patched.selectors.address){patched.selectors.address={...patched.selectors.address,text:input.storeAddress!.trim()};}
+        return patched;
+      });
+      const profile={id:('bd-'+serial.slice(-6)).replace(/[^\w-]/g,''),name:'BD '+serial.slice(-6),city:input.city!.trim(),point:input.address!.trim(),
+        eligibility:Object.fromEntries(sources.map(s=>[s.platform,{accountRef:s.account,platformCustomer:'unknown',storeCustomer:'unknown',memberSegment:'',memberProduct:'',memberTier:'',benefits:[],evidence:'首次设置提交，管理员待审核'}]))};
+      await mkdir(dataDir,{recursive:true});
+      await writeFile(join(dataDir,'pending-android-sources.json'),JSON.stringify(sources,null,2),'utf8');
+      await writeFile(join(dataDir,'pending-profile.json'),JSON.stringify(profile,null,2),'utf8');
+      await writeFile(join(dataDir,'setup-submission.json'),JSON.stringify({status:'pending',at:new Date().toISOString(),serial,city:profile.city,address:profile.point},null,2),'utf8');
+      reply(202,{status:'pending',submission:{serial,city:profile.city,address:profile.point},message:'配置已提交，等待管理员审核'});return true;
+    }
+    const admin=url.searchParams.get('pin')??'';
+    const pinOk=async()=>admin===(await adminPinFor(dataDir));
+    if (method==='GET' && path==='/api/admin/pending') {
+      if(!await pinOk()){reply(403,{error:'admin_pin_required'});return true;}
+      let submission:unknown=null;
+      try{submission=JSON.parse(await readFile(join(dataDir,'setup-submission.json'),'utf8'));}catch{}
+      reply(200,{submission});return true;
+    }
+    if (method==='POST' && path==='/api/admin/approve') {
+      const input=validator<{pin:string}>(object({pin:string(80,1)},['pin']),'管理员审核')(await body(20_000));
+      if(input.pin!==(await adminPinFor(dataDir))){reply(403,{error:'admin_pin_required'});return true;}
+      const sources=JSON.parse(await readFile(join(dataDir,'pending-android-sources.json'),'utf8'));
+      const profile=JSON.parse(await readFile(join(dataDir,'pending-profile.json'),'utf8'));
+      await writeFile(join(dataDir,'android-sources.json'),JSON.stringify(sources,null,2),'utf8');
+      store.saveProfile(profile);
+      await writeFile(join(dataDir,'setup.json'),JSON.stringify({completed:true,at:new Date().toISOString(),mode:'auto',address:profile.point,dataDir},null,2),'utf8');
+      try{await writeFile(join(dataDir,'setup-submission.json'),JSON.stringify({status:'approved',at:new Date().toISOString(),serial:profile.id},null,2),'utf8');}catch{}
+      reply(200,{approved:true,restartRequired:true,message:'配置已审核通过，请用托盘菜单重新启动服务后使用'});return true;
+    }
+    if (method==='POST' && path==='/api/admin/reject') {
+      const input=validator<{pin:string}>(object({pin:string(80,1)},['pin']),'管理员审核')(await body(20_000));
+      if(input.pin!==(await adminPinFor(dataDir))){reply(403,{error:'admin_pin_required'});return true;}
+      for(const name of ['pending-android-sources.json','pending-profile.json']) { try{await writeFile(join(dataDir,name),'{}','utf8');}catch{} }
+      await writeFile(join(dataDir,'setup-submission.json'),JSON.stringify({status:'rejected',at:new Date().toISOString()},null,2),'utf8');
+      reply(200,{rejected:true});return true;
     }
     return false;
   };

@@ -94,6 +94,31 @@ async function finish() {
   }
 }
 
+async function submitPhoneConfig() {
+  const state = $('phone-config-state');
+  state.textContent = '正在提交…';
+  try {
+    const data = await api('/api/setup/apply-phone', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        city: $('setup-city').value.trim(),
+        address: $('setup-address').value.trim(),
+        storeAddress: $('setup-store-address').value.trim(),
+        accounts: {
+          jd: $('setup-account-jd').value.trim(),
+          meituan: $('setup-account-meituan').value.trim(),
+          taobao_instant: $('setup-account-taobao').value.trim(),
+        },
+      }),
+    });
+    state.textContent = data.message || '已提交，等待管理员审核';
+    toast('配置已提交，等管理员审核通过后再使用自动采集');
+  } catch (error) {
+    state.textContent = '提交失败：' + error.message;
+  }
+}
+
+$('submit-phone-config').addEventListener('click', submitPhoneConfig);
 $('refresh-status').addEventListener('click', loadStatus);
 $('check-phone').addEventListener('click', checkPhone);
 $('catalog-file').addEventListener('change', (event) => importCatalog(event.target.files?.[0]));

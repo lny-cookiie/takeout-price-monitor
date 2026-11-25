@@ -29,3 +29,4 @@
 #setup-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;background:#4a3a28;color:#fff;font-size:13px;border-radius:6px;box-shadow:0 5px 20px #0002;max-width:90vw}
 #setup-toast:not(:empty){padding:12px 20px}
 @media(max-width:850px){.setup-main{padding:20px 18px 60px}.status-grid,.mode-grid{grid-template-columns:1fr}.setup-head h1{font-size:24px}}
+.setup-fields-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.setup-fields-row .setup-field{margin:0}@media(max-width:850px){.setup-fields-row{grid-template-columns:1fr}}

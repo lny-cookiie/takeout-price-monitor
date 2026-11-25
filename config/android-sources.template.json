@@ -1,0 +1,621 @@
+[
+  {
+    "platform": "jd",
+    "entry": "京东 App · 京东外卖",
+    "package": "com.jingdong.app.mall",
+    "appVersion": "16.1.50",
+    "device": "REPLACE_DEVICE",
+    "account": "bd-jd-account",
+    "point": "待填写配送地址",
+    "access": {
+      "reviewedBy": "BD提交后待管理员审核",
+      "reference": "首次设置向导提交，管理员审核后生效",
+      "expiresAt": "2027-12-31T00:00:00.000Z",
+      "allowedUse": "competition_monitoring"
+    },
+    "selectors": {
+      "channel": {
+        "text": "外卖",
+        "className": "ViewGroup"
+      },
+      "home": {
+        "text": "搜索",
+        "className": "Button"
+      },
+      "homePoint": {
+        "text": "待填写配送地址",
+        "className": "Button"
+      },
+      "search": {
+        "text": "搜索框",
+        "className": "LinearLayout",
+        "textPrefix": true
+      },
+      "searchInput": {
+        "text": "",
+        "className": "AutoCompleteTextView",
+        "resource": "com.jd.lib.omnichannelsearch.feature:id/o3",
+        "textPrefix": true
+      },
+      "searchValue": {
+        "text": "{query}",
+        "className": "AutoCompleteTextView",
+        "resource": "com.jd.lib.omnichannelsearch.feature:id/o3"
+      },
+      "searchSubmit": {
+        "text": "搜索",
+        "className": "Button",
+        "resource": "com.jd.lib.omnichannelsearch.feature:id/o2"
+      },
+      "result": {
+        "text": "麦当劳＆麦咖啡（天津鞍山西店）",
+        "className": "TextView"
+      },
+      "store": {
+        "text": "麦当劳＆麦咖啡（天津鞍山西店）",
+        "className": "TextView"
+      },
+      "address": {
+        "text": "待填写门店地址",
+        "className": "TextView"
+      },
+      "category": {
+        "text": "鸡肉虾肉汉堡/卷 未选中",
+        "className": "TextView"
+      },
+      "item": {
+        "text": "{item}",
+        "className": "TextView",
+        "withDescription": true
+      },
+      "itemDetail": {
+        "text": "{item}",
+        "className": "TextView"
+      },
+      "selectedSpec": {
+        "text": "已选：{spec}",
+        "className": "Button",
+        "withDescription": true
+      },
+      "dismissItemDetail": {
+        "text": "关闭弹层",
+        "className": "View",
+        "resource": "com.jd.lib.productdetail.feature:id/hv"
+      },
+      "add": {
+        "text": "加入购物车",
+        "className": "Button",
+        "resource": "com.jd.lib.productdetail.feature:id/alr"
+      },
+      "cart": {
+        "text": "店铺购物车（{quantity}件商品）按钮",
+        "className": "TextView"
+      },
+      "cartPanel": {
+        "text": "复选框，已选中，全选",
+        "className": "View",
+        "textPrefix": true
+      },
+      "cartCount": {
+        "text": "门店购物车，{quantity}件商品 按钮",
+        "className": "TextView"
+      },
+      "cartLine": {
+        "text": "{item} {spec}，{spec}",
+        "className": "View"
+      },
+      "quantity": {
+        "text": "数量{quantity}件",
+        "className": "View"
+      },
+      "checkout": {
+        "text": "去结算，按钮",
+        "className": "TextView"
+      },
+      "checkoutStage": {
+        "text": "应付总额",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/a8q"
+      },
+      "checkoutLine": {
+        "text": "{item}",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/af7"
+      },
+      "checkoutSpec": {
+        "text": "{spec}",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/a_8"
+      },
+      "checkoutQuantity": {
+        "text": "×{quantity}",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/af9"
+      },
+      "delivery": {
+        "text": "预计",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/pe",
+        "textPrefix": true
+      },
+      "point": {
+        "text": "待填写配送地址",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/b2r"
+      },
+      "remove": {
+        "text": "减少购买数量，按钮",
+        "className": "TextView"
+      },
+      "cartEmpty": {
+        "text": "门店购物车，暂无商品",
+        "className": "TextView"
+      },
+      "entryCategory": {
+        "text": "外卖",
+        "className": "Button"
+      },
+      "menuSearch": {
+        "text": "搜索，编辑框",
+        "className": "TextView"
+      },
+      "buyNow": {
+        "text": "立即购买",
+        "className": "Button"
+      }
+    },
+    "fields": {
+      "payable": {
+        "resource": "com.jd.lib.settlement.feature:id/a8o",
+        "prefix": ""
+      },
+      "current": {
+        "className": "ViewGroup",
+        "prefix": "¥"
+      },
+      "discount": {
+        "resource": "com.jd.lib.settlement.feature:id/a8_",
+        "prefix": "共减"
+      },
+      "eta": {
+        "resource": "com.jd.lib.settlement.feature:id/pe",
+        "prefix": "预计"
+      },
+      "subtotal": {
+        "resource": "com.jd.lib.settlement.feature:id/af6",
+        "prefix": "¥"
+      }
+    },
+    "jdShelf": {
+      "searchResults": {
+        "resource": "com.jd.lib.omnichannelsearch.feature:id/lh"
+      },
+      "resultCard": {
+        "className": "FrameLayout"
+      },
+      "resultName": {
+        "className": "TextView",
+        "prefix": "康师傅"
+      },
+      "identity": {
+        "className": "WebView"
+      },
+      "storeName": {
+        "className": "TextView",
+        "prefix": "康师傅"
+      },
+      "city": {
+        "className": "TextView",
+        "prefix": "天津",
+        "endAt": "区"
+      },
+      "address": {
+        "className": "TextView",
+        "prefix": "天津市"
+      },
+      "menu": {
+        "className": "WebView"
+      },
+      "itemCard": {
+        "className": "TextView"
+      },
+      "itemName": {
+        "className": "TextView",
+        "prefix": "",
+        "endAt": "，"
+      },
+      "sales": {
+        "className": "TextView",
+        "prefix": "已售"
+      },
+      "menuIdentity": {
+        "resource": "_Bm"
+      }
+    },
+    "subtotalBasis": "before_discount",
+    "feesSeparate": null,
+    "privacy": {
+      "checkoutTopRatio": 0.24
+    }
+  },
+  {
+    "platform": "meituan",
+    "entry": "美团外卖",
+    "package": "com.sankuai.meituan",
+    "appVersion": "12.69.402",
+    "device": "REPLACE_DEVICE",
+    "account": "bd-meituan-account",
+    "point": "待填写配送地址",
+    "access": {
+      "reviewedBy": "BD提交后待管理员审核",
+      "reference": "首次设置向导提交，管理员审核后生效",
+      "expiresAt": "2027-12-31T00:00:00.000Z",
+      "allowedUse": "competition_monitoring"
+    },
+    "selectors": {
+      "channel": {
+        "text": "外卖",
+        "className": "ViewGroup"
+      },
+      "home": {
+        "text": "搜索",
+        "className": "Button"
+      },
+      "homePoint": {
+        "text": "待填写配送地址",
+        "className": "Button"
+      },
+      "search": {
+        "text": "搜索框",
+        "className": "LinearLayout",
+        "textPrefix": true
+      },
+      "searchInput": {
+        "text": "",
+        "className": "AutoCompleteTextView",
+        "resource": "com.jd.lib.omnichannelsearch.feature:id/o3",
+        "textPrefix": true
+      },
+      "searchValue": {
+        "text": "{query}",
+        "className": "AutoCompleteTextView",
+        "resource": "com.jd.lib.omnichannelsearch.feature:id/o3"
+      },
+      "searchSubmit": {
+        "text": "搜索",
+        "className": "Button",
+        "resource": "com.jd.lib.omnichannelsearch.feature:id/o2"
+      },
+      "result": {
+        "text": "麦当劳＆麦咖啡（天津鞍山西店）",
+        "className": "TextView"
+      },
+      "store": {
+        "text": "麦当劳＆麦咖啡（天津鞍山西店）",
+        "className": "TextView"
+      },
+      "address": {
+        "text": "待填写门店地址",
+        "className": "TextView"
+      },
+      "category": {
+        "text": "鸡肉虾肉汉堡/卷 未选中",
+        "className": "TextView"
+      },
+      "item": {
+        "text": "{item}",
+        "className": "TextView",
+        "withDescription": true
+      },
+      "itemDetail": {
+        "text": "{item}",
+        "className": "TextView"
+      },
+      "selectedSpec": {
+        "text": "已选：{spec}",
+        "className": "Button",
+        "withDescription": true
+      },
+      "dismissItemDetail": {
+        "text": "关闭弹层",
+        "className": "View",
+        "resource": "com.jd.lib.productdetail.feature:id/hv"
+      },
+      "add": {
+        "text": "加入购物车",
+        "className": "Button",
+        "resource": "com.jd.lib.productdetail.feature:id/alr"
+      },
+      "cart": {
+        "text": "店铺购物车（{quantity}件商品）按钮",
+        "className": "TextView"
+      },
+      "cartPanel": {
+        "text": "复选框，已选中，全选",
+        "className": "View",
+        "textPrefix": true
+      },
+      "cartCount": {
+        "text": "门店购物车，{quantity}件商品 按钮",
+        "className": "TextView"
+      },
+      "cartLine": {
+        "text": "{item} {spec}，{spec}",
+        "className": "View"
+      },
+      "quantity": {
+        "text": "数量{quantity}件",
+        "className": "View"
+      },
+      "checkout": {
+        "text": "去结算，按钮",
+        "className": "TextView"
+      },
+      "checkoutStage": {
+        "text": "应付总额",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/a8q"
+      },
+      "checkoutLine": {
+        "text": "{item}",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/af7"
+      },
+      "checkoutSpec": {
+        "text": "{spec}",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/a_8"
+      },
+      "checkoutQuantity": {
+        "text": "×{quantity}",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/af9"
+      },
+      "delivery": {
+        "text": "预计",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/pe",
+        "textPrefix": true
+      },
+      "point": {
+        "text": "待填写配送地址",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/b2r"
+      },
+      "remove": {
+        "text": "减少购买数量，按钮",
+        "className": "TextView"
+      },
+      "cartEmpty": {
+        "text": "门店购物车，暂无商品",
+        "className": "TextView"
+      },
+      "entryCategory": {
+        "text": "外卖",
+        "className": "Button"
+      },
+      "menuSearch": {
+        "text": "搜索，编辑框",
+        "className": "TextView"
+      },
+      "buyNow": {
+        "text": "立即购买",
+        "className": "Button"
+      }
+    },
+    "fields": {
+      "payable": {
+        "resource": "com.jd.lib.settlement.feature:id/a8o",
+        "prefix": ""
+      },
+      "current": {
+        "className": "ViewGroup",
+        "prefix": "¥"
+      },
+      "discount": {
+        "resource": "com.jd.lib.settlement.feature:id/a8_",
+        "prefix": "共减"
+      },
+      "eta": {
+        "resource": "com.jd.lib.settlement.feature:id/pe",
+        "prefix": "预计"
+      },
+      "subtotal": {
+        "resource": "com.jd.lib.settlement.feature:id/af6",
+        "prefix": "¥"
+      }
+    },
+    "subtotalBasis": "before_discount",
+    "feesSeparate": null
+  },
+  {
+    "platform": "taobao_instant",
+    "entry": "淘宝 App · 闪购外卖",
+    "package": "com.taobao.taobao",
+    "appVersion": "10.69.10",
+    "device": "REPLACE_DEVICE",
+    "account": "bd-taobao_instant-account",
+    "point": "待填写配送地址",
+    "access": {
+      "reviewedBy": "BD提交后待管理员审核",
+      "reference": "首次设置向导提交，管理员审核后生效",
+      "expiresAt": "2027-12-31T00:00:00.000Z",
+      "allowedUse": "competition_monitoring"
+    },
+    "selectors": {
+      "channel": {
+        "text": "外卖",
+        "className": "ViewGroup"
+      },
+      "home": {
+        "text": "搜索",
+        "className": "Button"
+      },
+      "homePoint": {
+        "text": "待填写配送地址",
+        "className": "Button"
+      },
+      "search": {
+        "text": "搜索框",
+        "className": "LinearLayout",
+        "textPrefix": true
+      },
+      "searchInput": {
+        "text": "",
+        "className": "AutoCompleteTextView",
+        "resource": "com.jd.lib.omnichannelsearch.feature:id/o3",
+        "textPrefix": true
+      },
+      "searchValue": {
+        "text": "{query}",
+        "className": "AutoCompleteTextView",
+        "resource": "com.jd.lib.omnichannelsearch.feature:id/o3"
+      },
+      "searchSubmit": {
+        "text": "搜索",
+        "className": "Button",
+        "resource": "com.jd.lib.omnichannelsearch.feature:id/o2"
+      },
+      "result": {
+        "text": "麦当劳＆麦咖啡（天津鞍山西店）",
+        "className": "TextView"
+      },
+      "store": {
+        "text": "麦当劳＆麦咖啡（天津鞍山西店）",
+        "className": "TextView"
+      },
+      "address": {
+        "text": "待填写门店地址",
+        "className": "TextView"
+      },
+      "category": {
+        "text": "鸡肉虾肉汉堡/卷 未选中",
+        "className": "TextView"
+      },
+      "item": {
+        "text": "{item}",
+        "className": "TextView",
+        "withDescription": true
+      },
+      "itemDetail": {
+        "text": "{item}",
+        "className": "TextView"
+      },
+      "selectedSpec": {
+        "text": "已选：{spec}",
+        "className": "Button",
+        "withDescription": true
+      },
+      "dismissItemDetail": {
+        "text": "关闭弹层",
+        "className": "View",
+        "resource": "com.jd.lib.productdetail.feature:id/hv"
+      },
+      "add": {
+        "text": "加入购物车",
+        "className": "Button",
+        "resource": "com.jd.lib.productdetail.feature:id/alr"
+      },
+      "cart": {
+        "text": "店铺购物车（{quantity}件商品）按钮",
+        "className": "TextView"
+      },
+      "cartPanel": {
+        "text": "复选框，已选中，全选",
+        "className": "View",
+        "textPrefix": true
+      },
+      "cartCount": {
+        "text": "门店购物车，{quantity}件商品 按钮",
+        "className": "TextView"
+      },
+      "cartLine": {
+        "text": "{item} {spec}，{spec}",
+        "className": "View"
+      },
+      "quantity": {
+        "text": "数量{quantity}件",
+        "className": "View"
+      },
+      "checkout": {
+        "text": "去结算，按钮",
+        "className": "TextView"
+      },
+      "checkoutStage": {
+        "text": "应付总额",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/a8q"
+      },
+      "checkoutLine": {
+        "text": "{item}",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/af7"
+      },
+      "checkoutSpec": {
+        "text": "{spec}",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/a_8"
+      },
+      "checkoutQuantity": {
+        "text": "×{quantity}",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/af9"
+      },
+      "delivery": {
+        "text": "预计",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/pe",
+        "textPrefix": true
+      },
+      "point": {
+        "text": "待填写配送地址",
+        "className": "TextView",
+        "resource": "com.jd.lib.settlement.feature:id/b2r"
+      },
+      "remove": {
+        "text": "减少购买数量，按钮",
+        "className": "TextView"
+      },
+      "cartEmpty": {
+        "text": "门店购物车，暂无商品",
+        "className": "TextView"
+      },
+      "entryCategory": {
+        "text": "外卖",
+        "className": "Button"
+      },
+      "menuSearch": {
+        "text": "搜索，编辑框",
+        "className": "TextView"
+      },
+      "buyNow": {
+        "text": "立即购买",
+        "className": "Button"
+      }
+    },
+    "fields": {
+      "payable": {
+        "resource": "com.jd.lib.settlement.feature:id/a8o",
+        "prefix": ""
+      },
+      "current": {
+        "className": "ViewGroup",
+        "prefix": "¥"
+      },
+      "discount": {
+        "resource": "com.jd.lib.settlement.feature:id/a8_",
+        "prefix": "共减"
+      },
+      "eta": {
+        "resource": "com.jd.lib.settlement.feature:id/pe",
+        "prefix": "预计"
+      },
+      "subtotal": {
+        "resource": "com.jd.lib.settlement.feature:id/af6",
+        "prefix": "¥"
+      }
+    },
+    "subtotalBasis": "before_discount",
+    "feesSeparate": null
+  }
+]

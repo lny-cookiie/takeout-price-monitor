@@ -26,7 +26,17 @@
 
   <section class="setup-panel" aria-labelledby="data-title">
     <div class="setup-panel-head"><h2 id="data-title">4. 业务资料</h2><span class="muted smalltext">都可以之后再补</span></div>
-    <label class="setup-field"><span>测试配送地址（自动采集用）</span><input id="setup-address" placeholder="例如 天津市南开区××路×号"><small>只保存在这台电脑，用来确认结算页地址。</small></label>
+    <div class="setup-fields-row">
+      <label class="setup-field"><span>城市</span><input id="setup-city" placeholder="例如 天津市"><small>自动采集时按这个城市匹配门店。</small></label>
+      <label class="setup-field"><span>配送地址</span><input id="setup-address" placeholder="例如 天津市南开区××路×号"><small>只保存在这台电脑，用来确认结算页地址。</small></label>
+      <label class="setup-field"><span>门店地址</span><input id="setup-store-address" placeholder="例如 天津市南开区××路×号"><small>用于核对门店页面上的地址。</small></label>
+    </div>
+    <div class="setup-fields-row">
+      <label class="setup-field"><span>京东账号备注</span><input id="setup-account-jd" placeholder="例如 京东BD小张"><small>只写备注，不填密码。</small></label>
+      <label class="setup-field"><span>美团账号备注</span><input id="setup-account-meituan" placeholder="例如 美团BD小张"></label>
+      <label class="setup-field"><span>淘宝闪购账号备注</span><input id="setup-account-taobao" placeholder="例如 淘宝BD小张"></label>
+    </div>
+    <div class="bd-actions"><button type="button" class="secondary" id="submit-phone-config">提交手机配置给管理员审核</button><span id="phone-config-state" class="muted smalltext">管理员审核通过后自动采集才会启用</span></div>
     <div class="catalog-box"><div><strong>商品清单</strong><p class="muted smalltext">自动采集需要目标商品已经登记。可以先导入，也可以之后让管理员导入。</p></div>
       <div class="catalog-actions"><a class="link-button" href="/api/market/catalog/template.csv" download>下载模板</a><label class="link-button">导入 CSV<input id="catalog-file" type="file" accept=".csv,text/csv" hidden></label><span id="catalog-state" class="muted smalltext">还没有导入</span></div>
     </div>
@@ -36,3 +46,4 @@
 </main>
 <div id="setup-toast" role="status" aria-live="polite"></div>
 <script type="module" src="/setup.js"></script></body></html>
+<p class="muted smalltext" style="margin-top:10px">管理员审核：打开 <a href="/admin">/admin</a>，审核码在安装目录的 data\admin-pin.txt。</p>
